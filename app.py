@@ -67,6 +67,10 @@ def get_coproprietaires():
     response = supabase.table('coproprietaires').select('*').execute()
     return pd.DataFrame(response.data)
 
+def get_plan_comptable():
+    response = supabase.table('plan_comptable').select('*').execute()
+    return pd.DataFrame(response.data)
+
 def add_depense(data):
     response = supabase.table('depenses').insert(data).execute()
     return response
@@ -81,7 +85,7 @@ st.sidebar.title("Navigation")
 
 menu = st.sidebar.radio(
     "Choisir une section",
-    ["📊 Tableau de Bord", "💰 Budget", "📝 Dépenses", "👥 Copropriétaires", "🔄 Répartition", "📈 Analyses"]
+    ["📊 Tableau de Bord", "💰 Budget", "📝 Dépenses", "👥 Copropriétaires", "🔄 Répartition", "📈 Analyses", "📋 Plan Comptable"]
 )
 
 # ==================== TABLEAU DE BORD ====================
@@ -441,6 +445,153 @@ elif menu == "📈 Analyses":
         evolution = depenses_df.groupby('mois')['montant_du'].sum().reset_index()
         fig = px.area(evolution, x='mois', y='montant_du')
         st.plotly_chart(fig, use_container_width=True)
+
+# ==================== PLAN COMPTABLE ====================
+elif menu == "📋 Plan Comptable":
+    st.markdown("<h1 class='main-header'>📋 Plan Comptable</h1>", unsafe_allow_html=True)
+    
+    plan_df = get_plan_comptable()
+    
+    if not plan_df.empty:
+        # Statistiques
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Nombre de comptes", len(plan_df))
+        with col2:
+            if 'classe' in plan_df.columns:
+                st.metric("Nombre de classes", plan_df['classe'].nunique())
+            else:
+                st.metric("Classes", "N/A")
+        with col3:
+            if 'famille' in plan_df.columns:
+                st.metric("Nombre de familles", plan_df['famille'].nunique())
+            else:
+                st.metric("Familles", "N/A")
+        
+        st.divider()
+        
+        # Filtres
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # Filtre par classe
+            if 'classe' in plan_df.columns:
+                classes = ['Toutes'] + sorted(plan_df['classe'].unique().tolist())
+                classe_filter = st.selectbox("Filtrer par classe", classes)
+            else:
+                classe_filter = 'Toutes'
+        
+        with col2:
+            # Filtre par famille
+            if 'famille' in plan_df.columns:
+                familles = ['Toutes'] + sorted(plan_df['famille'].unique().tolist())
+                famille_filter = st.selectbox("Filtrer par famille", familles)
+            else:
+                famille_filter = 'Toutes'
+        
+        with col3:
+            # Recherche
+            search = st.text_input("🔍 Rechercher", placeholder="Compte ou libellé...")
+        
+        # Application des filtres
+        filtered_df = plan_df.copy()
+        
+        if 'classe' in plan_df.columns and classe_filter != 'Toutes':
+            filtered_df = filtered_df[filtered_df['classe'] == classe_filter]
+        
+        if 'famille' in plan_df.columns and famille_filter != 'Toutes':
+            filtered_df = filtered_df[filtered_df['famille'] == famille_filter]
+        
+        if search:
+            # Recherche dans le compte ou le libellé
+            mask = False
+            if 'compte' in filtered_df.columns:
+                mask = mask | filtered_df['compte'].astype(str).str.contains(search, case=False, na=False)
+            if 'libelle' in filtered_df.columns:
+                mask = mask | filtered_df['libelle'].astype(str).str.contains(search, case=False, na=False)
+            if 'libelle_compte' in filtered_df.columns:
+                mask = mask | filtered_df['libelle_compte'].astype(str).str.contains(search, case=False, na=False)
+            
+            if isinstance(mask, pd.Series):
+                filtered_df = filtered_df[mask]
+        
+        # Affichage
+        st.subheader(f"Plan comptable ({len(filtered_df)} comptes)")
+        
+        # Déterminer les colonnes à afficher
+        display_cols = []
+        if 'compte' in filtered_df.columns:
+            display_cols.append('compte')
+        if 'libelle_compte' in filtered_df.columns:
+            display_cols.append('libelle_compte')
+        elif 'libelle' in filtered_df.columns:
+            display_cols.append('libelle')
+        if 'classe' in filtered_df.columns:
+            display_cols.append('classe')
+        if 'famille' in filtered_df.columns:
+            display_cols.append('famille')
+        
+        # Configuration des colonnes
+        column_config = {}
+        if 'compte' in display_cols:
+            column_config['compte'] = st.column_config.NumberColumn("Compte", format="%d")
+        if 'libelle_compte' in display_cols:
+            column_config['libelle_compte'] = st.column_config.TextColumn("Libellé")
+        elif 'libelle' in display_cols:
+            column_config['libelle'] = st.column_config.TextColumn("Libellé")
+        if 'classe' in display_cols:
+            column_config['classe'] = st.column_config.TextColumn("Classe")
+        if 'famille' in display_cols:
+            column_config['famille'] = st.column_config.NumberColumn("Famille", format="%d")
+        
+        # Affichage du tableau
+        st.dataframe(
+            filtered_df[display_cols] if display_cols else filtered_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config=column_config
+        )
+        
+        # Graphiques
+        st.divider()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if 'famille' in filtered_df.columns:
+                st.subheader("Répartition par Famille")
+                famille_counts = filtered_df['famille'].value_counts().reset_index()
+                famille_counts.columns = ['Famille', 'Nombre de comptes']
+                fig = px.bar(famille_counts, x='Famille', y='Nombre de comptes', 
+                            text='Nombre de comptes',
+                            title='Nombre de comptes par famille')
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            if 'classe' in filtered_df.columns:
+                st.subheader("Répartition par Classe")
+                classe_counts = filtered_df['classe'].value_counts().reset_index()
+                classe_counts.columns = ['Classe', 'Nombre de comptes']
+                fig = px.pie(classe_counts, values='Nombre de comptes', names='Classe',
+                            title='Distribution par classe')
+                fig.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig, use_container_width=True)
+        
+        # Export
+        st.divider()
+        
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            csv = filtered_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Exporter en CSV",
+                data=csv,
+                file_name=f"plan_comptable_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+    else:
+        st.warning("⚠️ Aucune donnée dans le plan comptable. Vérifiez que la table 'plan_comptable' existe dans Supabase.")
 
 st.divider()
 st.markdown("<div style='text-align: center; color: #666;'>🏢 Gestion de Copropriété</div>", unsafe_allow_html=True)
