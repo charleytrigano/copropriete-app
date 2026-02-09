@@ -335,13 +335,16 @@ elif menu == "👥 Copropriétaires":
     copro_df = get_coproprietaires()
     
     if not copro_df.empty:
+        # Convertir tantieme en numérique
+        copro_df['tantieme'] = pd.to_numeric(copro_df['tantieme'], errors='coerce')
+        
         total_tantiemes = copro_df['tantieme'].sum()
         
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Nombre de copropriétaires", len(copro_df))
         with col2:
-            st.metric("Total tantièmes", total_tantiemes)
+            st.metric("Total tantièmes", int(total_tantiemes))
         with col3:
             st.metric("Moyenne", f"{copro_df['tantieme'].mean():.1f}")
         
@@ -368,6 +371,10 @@ elif menu == "🔄 Répartition":
     depenses_df = get_depenses()
     
     if not copro_df.empty and not depenses_df.empty:
+        # Convertir en numérique
+        copro_df['tantieme'] = pd.to_numeric(copro_df['tantieme'], errors='coerce')
+        depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
+        
         col1, col2 = st.columns(2)
         with col1:
             date_debut = st.date_input("Période du", datetime(2025, 1, 1), key="rep_debut")
@@ -437,4 +444,3 @@ elif menu == "📈 Analyses":
 
 st.divider()
 st.markdown("<div style='text-align: center; color: #666;'>🏢 Gestion de Copropriété</div>", unsafe_allow_html=True)
-
