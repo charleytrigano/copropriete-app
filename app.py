@@ -181,55 +181,304 @@ elif menu == "💰 Budget":
     budget_df = get_budget()
     
     if not budget_df.empty:
-        # Statistiques
+        # Filtres en haut
         col1, col2, col3 = st.columns(3)
+        
         with col1:
-            st.metric("Nombre de postes", len(budget_df))
+            # Filtre par année
+            annees_disponibles = sorted(budget_df['annee'].unique(), reverse=True)
+            annee_filter = st.selectbox("📅 Année", annees_disponibles, key="budget_annee")
+        
         with col2:
-            st.metric("Budget total", f"{budget_df['montant_budget'].sum():,.0f} €")
+            # Filtre par classe
+            classe_filter = st.multiselect("🏷️ Classe", options=sorted(budget_df['classe'].unique()))
+        
         with col3:
-            st.metric("Budget moyen", f"{budget_df['montant_budget'].mean():,.0f} €")
-        
-        st.divider()
-        
-        # Filtres
-        col1, col2 = st.columns(2)
-        with col1:
-            classe_filter = st.multiselect("Filtrer par classe", options=sorted(budget_df['classe'].unique()))
-        with col2:
-            famille_filter = st.multiselect("Filtrer par famille", options=sorted(budget_df['famille'].unique()))
+            # Filtre par famille
+            famille_filter = st.multiselect("📂 Famille", options=sorted(budget_df['famille'].unique()))
         
         # Application des filtres
-        filtered_budget = budget_df.copy()
+        filtered_budget = budget_df[budget_df['annee'] == annee_filter].copy()
+        
         if classe_filter:
             filtered_budget = filtered_budget[filtered_budget['classe'].isin(classe_filter)]
         if famille_filter:
             filtered_budget = filtered_budget[filtered_budget['famille'].isin(famille_filter)]
         
-        # Affichage du budget
-        st.subheader(f"Postes budgétaires ({len(filtered_budget)} postes)")
-        
-        # Édition du budget
-        edited_budget = st.data_editor(
-            filtered_budget[['compte', 'libelle_compte', 'montant_budget', 'classe', 'famille', 'annee']],
-            use_container_width=True,
-            hide_index=True,
-            num_rows="dynamic",
-            column_config={
-                "compte": st.column_config.NumberColumn("Compte", format="%d"),
-                "libelle_compte": st.column_config.TextColumn("Libellé"),
-                "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%.2f"),
-                "classe": st.column_config.TextColumn("Classe"),
-                "famille": st.column_config.NumberColumn("Famille", format="%d"),
-                "annee": st.column_config.NumberColumn("Année", format="%d")
-            }
-        )
-        
-        # Boutons d'action
-        col1, col2 = st.columns([1, 3])
+        # Statistiques FILTRÉES
+        st.divider()
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            if st.button("💾 Sauvegarder", type="primary"):
-                st.success("Budget mis à jour!")
+            st.metric("Nombre de postes", len(filtered_budget))
+        with col2:
+            st.metric("Budget total", f"{filtered_budget['montant_budget'].sum():,.0f} €")
+        with col3:
+            st.metric("Budget moyen", f"{filtered_budget['montant_budget'].mean():,.0f} €" if len(filtered_budget) > 0 else "0 €")
+        with col4:
+            # Comparer avec année précédente
+            annee_precedente = annee_filter - 1
+            budget_precedent = budget_df[budget_df['annee'] == annee_precedente]['montant_budget'].sum()
+            budget_actuel = filtered_budget['montant_budget'].sum()
+            if budget_precedent > 0:
+                variation = ((budget_actuel - budget_precedent) / budget_precedent * 100)
+                st.metric("vs année N-1", f"{variation:+.1f}%", delta=f"{budget_actuel - budget_precedent:,.0f} €")
+            else:
+                st.metric("vs année N-1", "N/A")
+        
+        st.divider()
+        
+        # Onglets
+        tab1, tab2, tab3 = st.tabs(["📋 Consulter", "✏️ Modifier", "➕ Créer Budget Année"])
+        
+        # =============== ONGLET 1 : CONSULTER ===============
+        with tab1:
+            st.subheader(f"Budget {annee_filter} ({len(filtered_budget)} postes)")
+            
+            # Affichage en lecture seule
+            st.dataframe(
+                filtered_budget[['compte', 'libelle_compte', 'montant_budget', 'classe', 'famille']],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "compte": st.column_config.NumberColumn("Compte", format="%d"),
+                    "libelle_compte": st.column_config.TextColumn("Libellé"),
+                    "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%,.0f"),
+                    "classe": st.column_config.TextColumn("Classe"),
+                    "famille": st.column_config.NumberColumn("Famille", format="%d")
+                }
+            )
+            
+            # Graphiques
+            st.divider()
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Par Famille")
+                budget_famille = filtered_budget.groupby('famille')['montant_budget'].sum().reset_index()
+                budget_famille.columns = ['Famille', 'Budget']
+                fig = px.bar(budget_famille, x='Famille', y='Budget', text='Budget')
+                fig.update_traces(texttemplate='%{text:,.0f}€', textposition='outside')
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                st.subheader("Par Classe")
+                budget_classe = filtered_budget.groupby('classe')['montant_budget'].sum().reset_index()
+                budget_classe.columns = ['Classe', 'Budget']
+                fig = px.pie(budget_classe, values='Budget', names='Classe')
+                fig.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Export
+            st.divider()
+            csv = filtered_budget.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Exporter en CSV",
+                data=csv,
+                file_name=f"budget_{annee_filter}.csv",
+                mime="text/csv"
+            )
+        
+        # =============== ONGLET 2 : MODIFIER ===============
+        with tab2:
+            st.subheader(f"Modifier le budget {annee_filter}")
+            
+            st.info("💡 Modifiez les montants directement dans le tableau. Les changements seront enregistrés dans Supabase.")
+            
+            # Édition
+            edited_budget = st.data_editor(
+                filtered_budget[['id', 'compte', 'libelle_compte', 'montant_budget', 'classe', 'famille']],
+                use_container_width=True,
+                hide_index=True,
+                disabled=['id', 'compte', 'libelle_compte', 'classe', 'famille'],
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                    "compte": st.column_config.NumberColumn("Compte", format="%d", disabled=True),
+                    "libelle_compte": st.column_config.TextColumn("Libellé", disabled=True),
+                    "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%.0f", min_value=0),
+                    "classe": st.column_config.TextColumn("Classe", disabled=True),
+                    "famille": st.column_config.NumberColumn("Famille", format="%d", disabled=True)
+                },
+                key="budget_editor"
+            )
+            
+            # Boutons d'action
+            col1, col2, col3 = st.columns([1, 1, 2])
+            
+            with col1:
+                if st.button("💾 Enregistrer les modifications", type="primary"):
+                    try:
+                        # Comparer et mettre à jour les lignes modifiées
+                        modifications = 0
+                        for idx, row in edited_budget.iterrows():
+                            # Trouver la ligne originale
+                            original_row = filtered_budget[filtered_budget['id'] == row['id']]
+                            if not original_row.empty:
+                                original_montant = original_row.iloc[0]['montant_budget']
+                                nouveau_montant = row['montant_budget']
+                                
+                                # Si changement, mettre à jour
+                                if original_montant != nouveau_montant:
+                                    supabase.table('budget').update({
+                                        'montant_budget': int(nouveau_montant)
+                                    }).eq('id', int(row['id'])).execute()
+                                    modifications += 1
+                        
+                        if modifications > 0:
+                            st.success(f"✅ {modifications} ligne(s) mise(s) à jour avec succès!")
+                            st.rerun()
+                        else:
+                            st.info("ℹ️ Aucune modification détectée")
+                    except Exception as e:
+                        st.error(f"❌ Erreur lors de la sauvegarde: {str(e)}")
+            
+            with col2:
+                if st.button("🔄 Annuler"):
+                    st.rerun()
+        
+        # =============== ONGLET 3 : CRÉER NOUVEAU BUDGET ===============
+        with tab3:
+            st.subheader("Créer un budget pour une nouvelle année")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                nouvelle_annee = st.number_input(
+                    "📅 Année du nouveau budget", 
+                    min_value=2020, 
+                    max_value=2050, 
+                    value=annee_filter + 1,
+                    step=1
+                )
+            
+            with col2:
+                annee_source = st.selectbox(
+                    "📋 Copier depuis l'année", 
+                    annees_disponibles,
+                    index=0
+                )
+            
+            # Vérifier si budget existe déjà
+            budget_existe = not budget_df[budget_df['annee'] == nouvelle_annee].empty
+            
+            if budget_existe:
+                st.warning(f"⚠️ Un budget pour l'année {nouvelle_annee} existe déjà ({len(budget_df[budget_df['annee'] == nouvelle_annee])} postes)")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("🗑️ Supprimer et recréer", type="secondary"):
+                        try:
+                            # Supprimer l'ancien budget
+                            supabase.table('budget').delete().eq('annee', nouvelle_annee).execute()
+                            st.success(f"✅ Budget {nouvelle_annee} supprimé")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Erreur: {str(e)}")
+            else:
+                st.info(f"ℹ️ Aucun budget n'existe pour {nouvelle_annee}")
+            
+            # Option de coefficient
+            st.subheader("Ajustement du budget")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                ajustement_type = st.radio(
+                    "Type d'ajustement",
+                    ["Aucun (copie à l'identique)", "Pourcentage global", "Montant fixe"]
+                )
+            
+            with col2:
+                if ajustement_type == "Pourcentage global":
+                    coefficient = st.number_input(
+                        "Pourcentage d'augmentation/diminution",
+                        min_value=-50.0,
+                        max_value=100.0,
+                        value=3.0,
+                        step=0.5,
+                        format="%.1f"
+                    ) / 100
+                elif ajustement_type == "Montant fixe":
+                    montant_fixe = st.number_input(
+                        "Montant à ajouter/retirer (€)",
+                        value=0,
+                        step=100
+                    )
+                else:
+                    coefficient = 0
+                    montant_fixe = 0
+            
+            # Aperçu
+            st.subheader("Aperçu")
+            budget_source = budget_df[budget_df['annee'] == annee_source].copy()
+            
+            if ajustement_type == "Pourcentage global":
+                budget_source['nouveau_montant'] = (budget_source['montant_budget'] * (1 + coefficient)).round(0).astype(int)
+            elif ajustement_type == "Montant fixe":
+                budget_source['nouveau_montant'] = (budget_source['montant_budget'] + montant_fixe).astype(int)
+            else:
+                budget_source['nouveau_montant'] = budget_source['montant_budget']
+            
+            total_ancien = budget_source['montant_budget'].sum()
+            total_nouveau = budget_source['nouveau_montant'].sum()
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(f"Budget {annee_source}", f"{total_ancien:,.0f} €")
+            with col2:
+                st.metric(f"Nouveau budget {nouvelle_annee}", f"{total_nouveau:,.0f} €")
+            with col3:
+                variation = total_nouveau - total_ancien
+                st.metric("Différence", f"{variation:+,.0f} €", delta=f"{(variation/total_ancien*100):+.1f}%")
+            
+            # Afficher aperçu
+            with st.expander(f"📋 Voir le détail ({len(budget_source)} postes)"):
+                st.dataframe(
+                    budget_source[['compte', 'libelle_compte', 'montant_budget', 'nouveau_montant', 'classe']],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "compte": "Compte",
+                        "libelle_compte": "Libellé",
+                        "montant_budget": st.column_config.NumberColumn(f"Budget {annee_source}", format="%,.0f €"),
+                        "nouveau_montant": st.column_config.NumberColumn(f"Budget {nouvelle_annee}", format="%,.0f €"),
+                        "classe": "Classe"
+                    }
+                )
+            
+            # Bouton de création
+            st.divider()
+            
+            if not budget_existe:
+                if st.button(f"✨ Créer le budget {nouvelle_annee}", type="primary", use_container_width=True):
+                    try:
+                        # Préparer les données
+                        nouveaux_postes = []
+                        for _, row in budget_source.iterrows():
+                            nouveau_poste = {
+                                'compte': int(row['compte']),
+                                'libelle_compte': row['libelle_compte'],
+                                'montant_budget': int(row['nouveau_montant']),
+                                'annee': int(nouvelle_annee),
+                                'classe': row['classe'],
+                                'famille': int(row['famille'])
+                            }
+                            nouveaux_postes.append(nouveau_poste)
+                        
+                        # Insérer par batch
+                        batch_size = 50
+                        total_insere = 0
+                        
+                        for i in range(0, len(nouveaux_postes), batch_size):
+                            batch = nouveaux_postes[i:i+batch_size]
+                            supabase.table('budget').insert(batch).execute()
+                            total_insere += len(batch)
+                        
+                        st.success(f"✅ Budget {nouvelle_annee} créé avec succès ! ({total_insere} postes)")
+                        st.balloons()
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"❌ Erreur lors de la création: {str(e)}")
 
 # ==================== DÉPENSES ====================
 elif menu == "📝 Dépenses":
