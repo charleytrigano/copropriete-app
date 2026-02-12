@@ -280,60 +280,240 @@ elif menu == "💰 Budget":
         
         # =============== ONGLET 2 : MODIFIER ===============
         with tab2:
-            st.subheader(f"Modifier le budget {annee_filter}")
+            st.subheader(f"Gérer le budget {annee_filter}")
             
-            st.info("💡 Modifiez les montants directement dans le tableau. Les changements seront enregistrés dans Supabase.")
+            # Sous-onglets pour organiser les actions
+            subtab1, subtab2, subtab3 = st.tabs(["✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer"])
             
-            # Édition
-            edited_budget = st.data_editor(
-                filtered_budget[['id', 'compte', 'libelle_compte', 'montant_budget', 'classe', 'famille']],
-                use_container_width=True,
-                hide_index=True,
-                disabled=['id', 'compte', 'libelle_compte', 'classe', 'famille'],
-                column_config={
-                    "id": st.column_config.NumberColumn("ID", disabled=True),
-                    "compte": st.column_config.NumberColumn("Compte", format="%d", disabled=True),
-                    "libelle_compte": st.column_config.TextColumn("Libellé", disabled=True),
-                    "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%.0f", min_value=0),
-                    "classe": st.column_config.TextColumn("Classe", disabled=True),
-                    "famille": st.column_config.NumberColumn("Famille", format="%d", disabled=True)
-                },
-                key="budget_editor"
-            )
+            # ========== SOUS-ONGLET 1 : MODIFIER ==========
+            with subtab1:
+                st.info("💡 Modifiez les lignes directement dans le tableau. Toutes les colonnes sont éditables.")
+                
+                # Tableau éditable avec TOUTES les colonnes modifiables
+                edited_budget = st.data_editor(
+                    filtered_budget[['id', 'compte', 'libelle_compte', 'montant_budget', 'classe', 'famille']],
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=['id'],  # Seul l'ID est non-éditable
+                    column_config={
+                        "id": st.column_config.NumberColumn("ID", disabled=True),
+                        "compte": st.column_config.NumberColumn("Compte", format="%d", min_value=0),
+                        "libelle_compte": st.column_config.TextColumn("Libellé", max_chars=200),
+                        "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%.0f", min_value=0),
+                        "classe": st.column_config.TextColumn("Classe"),
+                        "famille": st.column_config.NumberColumn("Famille", format="%d", min_value=0)
+                    },
+                    key="budget_editor_modify"
+                )
+                
+                # Boutons d'action
+                col1, col2, col3 = st.columns([1, 1, 2])
+                
+                with col1:
+                    if st.button("💾 Enregistrer les modifications", type="primary", key="save_modifications"):
+                        try:
+                            modifications = 0
+                            for idx, row in edited_budget.iterrows():
+                                # Trouver la ligne originale
+                                original_row = filtered_budget[filtered_budget['id'] == row['id']]
+                                if not original_row.empty:
+                                    original = original_row.iloc[0]
+                                    
+                                    # Vérifier s'il y a des changements
+                                    changed = False
+                                    updates = {}
+                                    
+                                    if int(row['compte']) != int(original['compte']):
+                                        updates['compte'] = int(row['compte'])
+                                        changed = True
+                                    
+                                    if str(row['libelle_compte']) != str(original['libelle_compte']):
+                                        updates['libelle_compte'] = str(row['libelle_compte'])
+                                        changed = True
+                                    
+                                    if float(row['montant_budget']) != float(original['montant_budget']):
+                                        updates['montant_budget'] = int(row['montant_budget'])
+                                        changed = True
+                                    
+                                    if str(row['classe']) != str(original['classe']):
+                                        updates['classe'] = str(row['classe'])
+                                        changed = True
+                                    
+                                    if int(row['famille']) != int(original['famille']):
+                                        updates['famille'] = int(row['famille'])
+                                        changed = True
+                                    
+                                    # Si changement, mettre à jour
+                                    if changed:
+                                        supabase.table('budget').update(updates).eq('id', int(row['id'])).execute()
+                                        modifications += 1
+                            
+                            if modifications > 0:
+                                st.success(f"✅ {modifications} ligne(s) mise(s) à jour avec succès!")
+                                st.rerun()
+                            else:
+                                st.info("ℹ️ Aucune modification détectée")
+                        except Exception as e:
+                            st.error(f"❌ Erreur lors de la sauvegarde: {str(e)}")
+                
+                with col2:
+                    if st.button("🔄 Annuler", key="cancel_modifications"):
+                        st.rerun()
             
-            # Boutons d'action
-            col1, col2, col3 = st.columns([1, 1, 2])
-            
-            with col1:
-                if st.button("💾 Enregistrer les modifications", type="primary"):
-                    try:
-                        # Comparer et mettre à jour les lignes modifiées
-                        modifications = 0
-                        for idx, row in edited_budget.iterrows():
-                            # Trouver la ligne originale
-                            original_row = filtered_budget[filtered_budget['id'] == row['id']]
-                            if not original_row.empty:
-                                original_montant = original_row.iloc[0]['montant_budget']
-                                nouveau_montant = row['montant_budget']
-                                
-                                # Si changement, mettre à jour
-                                if original_montant != nouveau_montant:
-                                    supabase.table('budget').update({
-                                        'montant_budget': int(nouveau_montant)
-                                    }).eq('id', int(row['id'])).execute()
-                                    modifications += 1
+            # ========== SOUS-ONGLET 2 : AJOUTER ==========
+            with subtab2:
+                st.subheader(f"Ajouter un nouveau compte au budget {annee_filter}")
+                
+                st.info("💡 Complétez tous les champs pour ajouter un nouveau poste budgétaire.")
+                
+                # Formulaire d'ajout
+                with st.form("add_budget_line"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        new_compte = st.number_input(
+                            "Numéro de compte *",
+                            min_value=0,
+                            step=1,
+                            format="%d",
+                            help="Numéro unique du compte comptable"
+                        )
                         
-                        if modifications > 0:
-                            st.success(f"✅ {modifications} ligne(s) mise(s) à jour avec succès!")
-                            st.rerun()
+                        new_libelle = st.text_input(
+                            "Libellé du compte *",
+                            max_chars=200,
+                            help="Description du compte"
+                        )
+                        
+                        new_montant = st.number_input(
+                            "Montant du budget (€) *",
+                            min_value=0,
+                            step=100,
+                            format="%d",
+                            help="Montant budgété pour ce poste"
+                        )
+                    
+                    with col2:
+                        # Récupérer les classes existantes pour suggérer
+                        classes_existantes = sorted(budget_df['classe'].unique())
+                        new_classe = st.selectbox(
+                            "Classe *",
+                            options=classes_existantes + ["Nouvelle classe..."],
+                            help="Classe comptable"
+                        )
+                        
+                        if new_classe == "Nouvelle classe...":
+                            new_classe = st.text_input("Nom de la nouvelle classe *")
+                        
+                        # Récupérer les familles existantes
+                        familles_existantes = sorted(budget_df['famille'].unique())
+                        famille_choice = st.selectbox(
+                            "Famille *",
+                            options=["Choisir existante", "Nouvelle famille"],
+                            help="Famille comptable"
+                        )
+                        
+                        if famille_choice == "Choisir existante":
+                            new_famille = st.selectbox("Sélectionner", options=familles_existantes)
                         else:
-                            st.info("ℹ️ Aucune modification détectée")
-                    except Exception as e:
-                        st.error(f"❌ Erreur lors de la sauvegarde: {str(e)}")
+                            new_famille = st.number_input("Numéro de famille *", min_value=0, step=1)
+                    
+                    # Bouton de soumission
+                    submitted = st.form_submit_button("✨ Ajouter le compte", type="primary", use_container_width=True)
+                    
+                    if submitted:
+                        # Validation
+                        if not new_libelle:
+                            st.error("❌ Le libellé est obligatoire")
+                        elif not new_classe or new_classe == "Nouvelle classe...":
+                            st.error("❌ La classe est obligatoire")
+                        else:
+                            try:
+                                # Vérifier si le compte existe déjà pour cette année
+                                existing = budget_df[
+                                    (budget_df['compte'] == new_compte) & 
+                                    (budget_df['annee'] == annee_filter)
+                                ]
+                                
+                                if not existing.empty:
+                                    st.error(f"❌ Le compte {new_compte} existe déjà pour l'année {annee_filter}")
+                                else:
+                                    # Insérer le nouveau compte
+                                    new_line = {
+                                        'compte': int(new_compte),
+                                        'libelle_compte': new_libelle,
+                                        'montant_budget': int(new_montant),
+                                        'annee': int(annee_filter),
+                                        'classe': str(new_classe),
+                                        'famille': int(new_famille)
+                                    }
+                                    
+                                    supabase.table('budget').insert(new_line).execute()
+                                    
+                                    st.success(f"✅ Compte {new_compte} ajouté avec succès!")
+                                    st.balloons()
+                                    st.rerun()
+                                    
+                            except Exception as e:
+                                st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
+                
+                # Aperçu des comptes existants pour référence
+                with st.expander("📋 Voir les comptes existants pour référence"):
+                    st.dataframe(
+                        filtered_budget[['compte', 'libelle_compte', 'classe', 'famille']].head(10),
+                        use_container_width=True,
+                        hide_index=True
+                    )
             
-            with col2:
-                if st.button("🔄 Annuler"):
-                    st.rerun()
+            # ========== SOUS-ONGLET 3 : SUPPRIMER ==========
+            with subtab3:
+                st.subheader(f"Supprimer des comptes du budget {annee_filter}")
+                
+                st.warning("⚠️ La suppression est définitive et ne peut pas être annulée.")
+                
+                if not filtered_budget.empty:
+                    # Sélection par ID
+                    st.info("💡 Sélectionnez les comptes à supprimer.")
+                    
+                    ids_to_delete = st.multiselect(
+                        "Sélectionner les comptes à supprimer",
+                        options=filtered_budget['id'].tolist(),
+                        format_func=lambda x: f"ID {x} - {filtered_budget[filtered_budget['id']==x]['libelle_compte'].values[0]}"
+                    )
+                    
+                    if ids_to_delete:
+                        st.warning(f"🗑️ {len(ids_to_delete)} ligne(s) sélectionnée(s) pour suppression")
+                        
+                        # Afficher les lignes qui seront supprimées
+                        lines_to_delete = filtered_budget[filtered_budget['id'].isin(ids_to_delete)]
+                        st.dataframe(
+                            lines_to_delete[['compte', 'libelle_compte', 'montant_budget']],
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        col1, col2, col3 = st.columns([1, 1, 2])
+                        
+                        with col1:
+                            if st.button("🗑️ Confirmer la suppression", type="secondary", key="confirm_delete"):
+                                try:
+                                    # Supprimer les lignes sélectionnées
+                                    for id_to_del in ids_to_delete:
+                                        supabase.table('budget').delete().eq('id', id_to_del).execute()
+                                    
+                                    st.success(f"✅ {len(ids_to_delete)} ligne(s) supprimée(s) avec succès!")
+                                    st.rerun()
+                                    
+                                except Exception as e:
+                                    st.error(f"❌ Erreur lors de la suppression: {str(e)}")
+                        
+                        with col2:
+                            if st.button("❌ Annuler", key="cancel_delete"):
+                                st.rerun()
+                    else:
+                        st.info("ℹ️ Sélectionnez au moins un compte pour activer la suppression")
+                else:
+                    st.info("ℹ️ Aucune ligne à supprimer avec les filtres actuels")
         
         # =============== ONGLET 3 : CRÉER NOUVEAU BUDGET ===============
         with tab3:
