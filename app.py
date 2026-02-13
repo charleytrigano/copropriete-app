@@ -52,25 +52,42 @@ st.markdown("""
 
 # Fonctions de base de données
 def get_budget():
-    response = supabase.table('budget').select('*').execute()
-    return pd.DataFrame(response.data)
+    try:
+        response = supabase.table('budget').select('*').execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"❌ Erreur lors de la récupération du budget: {str(e)}")
+        return pd.DataFrame()
 
 def get_depenses(date_debut=None, date_fin=None):
-    query = supabase.table('depenses').select('*')
-    if date_debut:
-        query = query.gte('date', date_debut.strftime('%Y-%m-%d'))
-    if date_fin:
-        query = query.lte('date', date_fin.strftime('%Y-%m-%d'))
-    response = query.execute()
-    return pd.DataFrame(response.data)
+    try:
+        query = supabase.table('depenses').select('*')
+        if date_debut:
+            query = query.gte('date', date_debut.strftime('%Y-%m-%d'))
+        if date_fin:
+            query = query.lte('date', date_fin.strftime('%Y-%m-%d'))
+        response = query.execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"❌ Erreur lors de la récupération des dépenses: {str(e)}")
+        st.info("💡 Vérifiez que la table 'depenses' existe dans Supabase et que RLS est désactivé.")
+        return pd.DataFrame()  # Retourner un DataFrame vide en cas d'erreur
 
 def get_coproprietaires():
-    response = supabase.table('coproprietaires').select('*').execute()
-    return pd.DataFrame(response.data)
+    try:
+        response = supabase.table('coproprietaires').select('*').execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"❌ Erreur lors de la récupération des copropriétaires: {str(e)}")
+        return pd.DataFrame()
 
 def get_plan_comptable():
-    response = supabase.table('plan_comptable').select('*').execute()
-    return pd.DataFrame(response.data)
+    try:
+        response = supabase.table('plan_comptable').select('*').execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"❌ Erreur lors de la récupération du plan comptable: {str(e)}")
+        return pd.DataFrame()
 
 def add_depense(data):
     response = supabase.table('depenses').insert(data).execute()
