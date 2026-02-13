@@ -514,41 +514,49 @@ elif menu == "💰 Budget":
                             for error in errors:
                                 st.error(f"❌ {error}")
                         else:
-                            try:
-                                # Vérifier si le compte existe déjà pour cette année
-                                existing = budget_df[
-                                    (budget_df['compte'] == new_compte) & 
-                                    (budget_df['annee'] == annee_filter)
-                                ]
-                                
-                                if not existing.empty:
-                                    st.error(f"❌ Le compte {new_compte} existe déjà dans le budget {annee_filter}")
-                                else:
-                                    # Insérer le nouveau compte
-                                    new_line = {
-                                        'compte': int(new_compte),
-                                        'libelle_compte': new_libelle.strip(),
-                                        'montant_budget': int(new_montant),
-                                        'annee': int(annee_filter),
-                                        'classe': new_classe.strip(),
-                                        'famille': int(new_famille)
-                                    }
+                            # Clé unique pour éviter les doublons
+                            insert_key = f"budget_{new_compte}_{annee_filter}_{new_montant}"
+                            
+                            if 'last_budget_insert' not in st.session_state or st.session_state.last_budget_insert != insert_key:
+                                try:
+                                    # Vérifier si le compte existe déjà pour cette année
+                                    existing = budget_df[
+                                        (budget_df['compte'] == new_compte) & 
+                                        (budget_df['annee'] == annee_filter)
+                                    ]
                                     
-                                    supabase.table('budget').insert(new_line).execute()
-                                    
-                                    st.success(f"✅ Compte {new_compte} - {new_libelle} ajouté avec succès au budget {annee_filter}!")
-                                    st.balloons()
-                                    
-                                    # Attendre un peu pour que l'utilisateur voie le message
-                                    import time
-                                    time.sleep(1)
-                                    st.rerun()
-                                    
-                            except Exception as e:
-                                st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
+                                    if not existing.empty:
+                                        st.error(f"❌ Le compte {new_compte} existe déjà dans le budget {annee_filter}")
+                                    else:
+                                        # Insérer le nouveau compte
+                                        new_line = {
+                                            'compte': int(new_compte),
+                                            'libelle_compte': new_libelle.strip(),
+                                            'montant_budget': int(new_montant),
+                                            'annee': int(annee_filter),
+                                            'classe': new_classe.strip(),
+                                            'famille': int(new_famille)
+                                        }
+                                        
+                                        supabase.table('budget').insert(new_line).execute()
+                                        
+                                        # Marquer comme inséré
+                                        st.session_state.last_budget_insert = insert_key
+                                        
+                                        st.success(f"✅ Compte {new_compte} - {new_libelle} ajouté avec succès au budget {annee_filter}!")
+                                        st.balloons()
+                                        st.rerun()
+                                        
+                                except Exception as e:
+                                    st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
+                            else:
+                                st.info("Ce compte a déjà été ajouté. Modifiez les valeurs pour ajouter un nouveau compte.")
                 
                 with col2:
                     if st.button("🔄 Réinitialiser", use_container_width=True, key="reset_form_btn"):
+                        # Réinitialiser le flag
+                        if 'last_budget_insert' in st.session_state:
+                            del st.session_state.last_budget_insert
                         st.rerun()
                 
                 # Aide : Aperçu du plan comptable
@@ -1069,29 +1077,41 @@ elif menu == "📝 Dépenses":
                         for error in errors:
                             st.error(f"❌ {error}")
                     else:
-                        try:
-                            nouvelle_depense = {
-                                'date': new_dep_date.strftime('%Y-%m-%d'),
-                                'compte': int(new_dep_compte),
-                                'fournisseur': new_dep_fournisseur.strip(),
-                                'montant_du': float(new_dep_montant),
-                                'classe': auto_classe,
-                                'famille': auto_famille,
-                                'commentaire': new_dep_commentaire.strip() if new_dep_commentaire else None
-                            }
-                            
-                            supabase.table('depenses').insert(nouvelle_depense).execute()
-                            
-                            st.success(f"✅ Dépense de {new_dep_montant:.2f} € ajoutée avec succès!")
-                            st.balloons()
-                            time.sleep(1)
-                            st.rerun()
-                            
-                        except Exception as e:
-                            st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
+                        # Utiliser session_state pour éviter les doublons
+                        insert_key = f"depense_{new_dep_date}_{new_dep_compte}_{new_dep_montant}_{new_dep_fournisseur}"
+                        
+                        if 'last_insert' not in st.session_state or st.session_state.last_insert != insert_key:
+                            try:
+                                nouvelle_depense = {
+                                    'date': new_dep_date.strftime('%Y-%m-%d'),
+                                    'compte': int(new_dep_compte),
+                                    'fournisseur': new_dep_fournisseur.strip(),
+                                    'montant_du': float(new_dep_montant),
+                                    'classe': auto_classe,
+                                    'famille': auto_famille,
+                                    'commentaire': new_dep_commentaire.strip() if new_dep_commentaire else None
+                                }
+                                
+                                supabase.table('depenses').insert(nouvelle_depense).execute()
+                                
+                                # Marquer comme inséré
+                                st.session_state.last_insert = insert_key
+                                
+                                st.success(f"✅ Dépense de {new_dep_montant:.2f} € ajoutée avec succès!")
+                                st.balloons()
+                                # Attendre avant de rerun pour que l'utilisateur voie le message
+                                st.rerun()
+                                
+                            except Exception as e:
+                                st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
+                        else:
+                            st.info("Cette dépense a déjà été ajoutée. Modifiez les valeurs pour ajouter une nouvelle dépense.")
             
             with col2:
                 if st.button("🔄 Réinitialiser", use_container_width=True, key="reset_depense_form"):
+                    # Réinitialiser le flag
+                    if 'last_insert' in st.session_state:
+                        del st.session_state.last_insert
                     st.rerun()
             
             # Aide
