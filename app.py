@@ -892,7 +892,7 @@ elif menu == "📝 Dépenses":
                     "date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
                     "compte": st.column_config.NumberColumn("Compte", format="%d", min_value=0),
                     "fournisseur": st.column_config.TextColumn("Fournisseur", max_chars=200),
-                    "montant_du": st.column_config.NumberColumn("Montant (€)", format="%.2f", min_value=0),
+                    "montant_du": st.column_config.NumberColumn("Montant (€)", format="%.2f", help="Montant positif = dépense, négatif = remboursement/avoir"),
                     "commentaire": st.column_config.TextColumn("Commentaire", max_chars=500)
                 },
                 key="depenses_editor"
@@ -1015,10 +1015,9 @@ elif menu == "📝 Dépenses":
             with col2:
                 new_dep_montant = st.number_input(
                     "Montant (€) *",
-                    min_value=0.0,
                     step=0.01,
                     format="%.2f",
-                    help="Montant de la dépense",
+                    help="Montant positif = dépense, négatif = remboursement/avoir",
                     key="new_dep_montant"
                 )
                 
@@ -1046,8 +1045,8 @@ elif menu == "📝 Dépenses":
                     if not new_dep_fournisseur or new_dep_fournisseur.strip() == "":
                         errors.append("Le fournisseur est obligatoire")
                     
-                    if new_dep_montant <= 0:
-                        errors.append("Le montant doit être supérieur à 0")
+                    if new_dep_montant == 0:
+                        errors.append("Le montant ne peut pas être 0 (utilisez + pour dépense, - pour remboursement)")
                     
                     if errors:
                         for error in errors:
