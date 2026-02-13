@@ -616,19 +616,32 @@ elif menu == "💰 Budget":
                         
                         with col1:
                             if st.button("🗑️ Confirmer la suppression", type="secondary", key="confirm_delete"):
-                                try:
-                                    # Supprimer les lignes sélectionnées
-                                    for id_to_del in ids_to_delete:
-                                        supabase.table('budget').delete().eq('id', id_to_del).execute()
-                                    
-                                    st.success(f"✅ {len(ids_to_delete)} ligne(s) supprimée(s) avec succès!")
-                                    st.rerun()
-                                    
-                                except Exception as e:
-                                    st.error(f"❌ Erreur lors de la suppression: {str(e)}")
+                                # Créer une clé unique pour cette suppression
+                                delete_key = f"delete_budget_{'-'.join(map(str, sorted(ids_to_delete)))}"
+                                
+                                # Vérifier si cette suppression n'a pas déjà été faite
+                                if 'last_budget_delete' not in st.session_state or st.session_state.last_budget_delete != delete_key:
+                                    try:
+                                        # Supprimer les lignes sélectionnées
+                                        for id_to_del in ids_to_delete:
+                                            supabase.table('budget').delete().eq('id', id_to_del).execute()
+                                        
+                                        # Marquer comme supprimé
+                                        st.session_state.last_budget_delete = delete_key
+                                        
+                                        st.success(f"✅ {len(ids_to_delete)} ligne(s) supprimée(s) avec succès!")
+                                        st.rerun()
+                                        
+                                    except Exception as e:
+                                        st.error(f"❌ Erreur lors de la suppression: {str(e)}")
+                                else:
+                                    st.info("Ces lignes ont déjà été supprimées. Rafraîchissez la page (F5).")
                         
                         with col2:
                             if st.button("❌ Annuler", key="cancel_delete"):
+                                # Réinitialiser le flag
+                                if 'last_budget_delete' in st.session_state:
+                                    del st.session_state.last_budget_delete
                                 st.rerun()
                     else:
                         st.info("ℹ️ Sélectionnez au moins un compte pour activer la suppression")
@@ -1160,19 +1173,32 @@ elif menu == "📝 Dépenses":
                     
                     with col1:
                         if st.button("🗑️ Confirmer la suppression", type="secondary", key="confirm_delete_depenses"):
-                            try:
-                                for id_to_del in ids_to_delete:
-                                    supabase.table('depenses').delete().eq('id', id_to_del).execute()
-                                
-                                st.success(f"✅ {len(ids_to_delete)} dépense(s) supprimée(s) avec succès!")
-                                time.sleep(1)
-                                st.rerun()
-                                
-                            except Exception as e:
-                                st.error(f"❌ Erreur lors de la suppression: {str(e)}")
+                            # Créer une clé unique pour cette suppression
+                            delete_key = f"delete_depenses_{'-'.join(map(str, sorted(ids_to_delete)))}"
+                            
+                            # Vérifier si cette suppression n'a pas déjà été faite
+                            if 'last_delete' not in st.session_state or st.session_state.last_delete != delete_key:
+                                try:
+                                    # Supprimer les lignes
+                                    for id_to_del in ids_to_delete:
+                                        supabase.table('depenses').delete().eq('id', id_to_del).execute()
+                                    
+                                    # Marquer comme supprimé
+                                    st.session_state.last_delete = delete_key
+                                    
+                                    st.success(f"✅ {len(ids_to_delete)} dépense(s) supprimée(s) avec succès!")
+                                    st.rerun()
+                                    
+                                except Exception as e:
+                                    st.error(f"❌ Erreur lors de la suppression: {str(e)}")
+                            else:
+                                st.info("Ces lignes ont déjà été supprimées. Rafraîchissez la page (F5).")
                     
                     with col2:
                         if st.button("❌ Annuler", key="cancel_delete_depenses"):
+                            # Réinitialiser le flag de suppression
+                            if 'last_delete' in st.session_state:
+                                del st.session_state.last_delete
                             st.rerun()
                 else:
                     st.info("ℹ️ Sélectionnez au moins une dépense pour activer la suppression")
