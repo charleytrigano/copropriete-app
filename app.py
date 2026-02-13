@@ -1032,46 +1032,45 @@ elif menu == "📝 Dépenses":
                 auto_famille = None
             
             st.divider()
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                new_dep_date = st.date_input(
-                    "Date *",
-                    value=datetime.now(),
-                    help="Date de la dépense",
-                    key="new_dep_date"
-                )
-                
-                new_dep_fournisseur = st.text_input(
-                    "Fournisseur *",
-                    max_chars=200,
-                    help="Nom du fournisseur",
-                    key="new_dep_fournisseur"
-                )
-            
-            with col2:
-                new_dep_montant = st.number_input(
-                    "Montant (€) *",
-                    step=0.01,
-                    format="%.2f",
-                    help="Montant positif = dépense, négatif = remboursement/avoir",
-                    key="new_dep_montant"
-                )
-                
-                new_dep_commentaire = st.text_area(
-                    "Commentaire (optionnel)",
-                    max_chars=500,
-                    help="Commentaire libre",
-                    key="new_dep_commentaire"
-                )
-            
-            # Boutons
             st.divider()
-            col1, col2 = st.columns([1, 1])
             
-            with col1:
-                if st.button("✨ Ajouter la dépense", type="primary", use_container_width=True, key="add_depense_btn"):
+            # Le reste du formulaire (date, fournisseur, montant, commentaire)
+            with st.form("form_add_depense", clear_on_submit=False):
+                st.caption(f"Compte : {new_dep_compte} - {compte_budget.iloc[0]['libelle_compte'] if compte_budget is not None and not compte_budget.empty else 'Non trouvé'}")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    form_dep_date = st.date_input(
+                        "Date *",
+                        value=datetime.now(),
+                        help="Date de la dépense"
+                    )
+                    
+                    form_dep_fournisseur = st.text_input(
+                        "Fournisseur *",
+                        max_chars=200,
+                        help="Nom du fournisseur"
+                    )
+                
+                with col2:
+                    form_dep_montant = st.number_input(
+                        "Montant (€) *",
+                        step=0.01,
+                        format="%.2f",
+                        help="Montant positif = dépense, négatif = remboursement/avoir"
+                    )
+                    
+                    form_dep_commentaire = st.text_area(
+                        "Commentaire (optionnel)",
+                        max_chars=500,
+                        help="Commentaire libre"
+                    )
+                
+                # Bouton de soumission du formulaire
+                submitted = st.form_submit_button("✨ Ajouter la dépense", type="primary", use_container_width=True)
+                
+                if submitted:
                     errors = []
                     
                     if new_dep_compte <= 0:
@@ -1080,52 +1079,35 @@ elif menu == "📝 Dépenses":
                     if auto_classe is None or auto_famille is None:
                         errors.append(f"Le compte {new_dep_compte} n'existe pas dans le budget")
                     
-                    if not new_dep_fournisseur or new_dep_fournisseur.strip() == "":
+                    if not form_dep_fournisseur or form_dep_fournisseur.strip() == "":
                         errors.append("Le fournisseur est obligatoire")
                     
-                    if new_dep_montant == 0:
+                    if form_dep_montant == 0:
                         errors.append("Le montant ne peut pas être 0 (utilisez + pour dépense, - pour remboursement)")
                     
                     if errors:
                         for error in errors:
                             st.error(f"❌ {error}")
                     else:
-                        # Utiliser session_state pour éviter les doublons
-                        insert_key = f"depense_{new_dep_date}_{new_dep_compte}_{new_dep_montant}_{new_dep_fournisseur}"
-                        
-                        if 'last_insert' not in st.session_state or st.session_state.last_insert != insert_key:
-                            try:
-                                nouvelle_depense = {
-                                    'date': new_dep_date.strftime('%Y-%m-%d'),
-                                    'compte': int(new_dep_compte),
-                                    'fournisseur': new_dep_fournisseur.strip(),
-                                    'montant_du': float(new_dep_montant),
-                                    'classe': auto_classe,
-                                    'famille': auto_famille,
-                                    'commentaire': new_dep_commentaire.strip() if new_dep_commentaire else None
-                                }
-                                
-                                supabase.table('depenses').insert(nouvelle_depense).execute()
-                                
-                                # Marquer comme inséré
-                                st.session_state.last_insert = insert_key
-                                
-                                st.success(f"✅ Dépense de {new_dep_montant:.2f} € ajoutée avec succès!")
-                                st.balloons()
-                                # Attendre avant de rerun pour que l'utilisateur voie le message
-                                st.rerun()
-                                
-                            except Exception as e:
-                                st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
-                        else:
-                            st.info("Cette dépense a déjà été ajoutée. Modifiez les valeurs pour ajouter une nouvelle dépense.")
-            
-            with col2:
-                if st.button("🔄 Réinitialiser", use_container_width=True, key="reset_depense_form"):
-                    # Réinitialiser le flag
-                    if 'last_insert' in st.session_state:
-                        del st.session_state.last_insert
-                    st.rerun()
+                        try:
+                            nouvelle_depense = {
+                                'date': form_dep_date.strftime('%Y-%m-%d'),
+                                'compte': int(new_dep_compte),
+                                'fournisseur': form_dep_fournisseur.strip(),
+                                'montant_du': float(form_dep_montant),
+                                'classe': auto_classe,
+                                'famille': auto_famille,
+                                'commentaire': form_dep_commentaire.strip() if form_dep_commentaire else None
+                            }
+                            
+                            supabase.table('depenses').insert(nouvelle_depense).execute()
+                            
+                            st.success(f"✅ Dépense de {form_dep_montant:.2f} € ajoutée avec succès!")
+                            st.balloons()
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
             
             # Aide
             st.divider()
