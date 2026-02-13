@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 import os
+import time
 
 # Configuration de la page
 st.set_page_config(
@@ -364,69 +365,137 @@ elif menu == "💰 Budget":
             with subtab2:
                 st.subheader(f"Ajouter un nouveau compte au budget {annee_filter}")
                 
-                st.info("💡 Complétez tous les champs pour ajouter un nouveau poste budgétaire.")
+                st.info("💡 Entrez le numéro de compte. Si le compte existe dans le plan comptable, les informations seront automatiquement remplies.")
                 
-                # Formulaire d'ajout
-                with st.form("add_budget_line"):
-                    col1, col2 = st.columns(2)
+                # Récupérer le plan comptable
+                plan_df = get_plan_comptable()
+                
+                # Numéro de compte (sans formulaire pour permettre l'auto-remplissage)
+                new_compte = st.number_input(
+                    "Numéro de compte *",
+                    min_value=0,
+                    step=1,
+                    format="%d",
+                    help="Entrez le numéro du compte. Les autres champs se rempliront automatiquement s'il existe dans le plan comptable.",
+                    key="new_compte_input"
+                )
+                
+                # Chercher dans le plan comptable
+                compte_info = None
+                if new_compte > 0 and not plan_df.empty:
+                    compte_info = plan_df[plan_df['compte'] == new_compte]
+                
+                # Afficher un message si trouvé
+                if compte_info is not None and not compte_info.empty:
+                    st.success(f"✅ Compte trouvé dans le plan comptable : {compte_info.iloc[0]['libelle_compte']}")
+                    auto_fill = True
+                    default_libelle = compte_info.iloc[0]['libelle_compte']
+                    default_classe = compte_info.iloc[0]['classe']
+                    default_famille = int(compte_info.iloc[0]['famille'])
+                elif new_compte > 0:
+                    st.warning(f"⚠️ Le compte {new_compte} n'existe pas dans le plan comptable. Vous devrez saisir toutes les informations manuellement.")
+                    auto_fill = False
+                    default_libelle = ""
+                    default_classe = ""
+                    default_famille = 0
+                else:
+                    auto_fill = False
+                    default_libelle = ""
+                    default_classe = ""
+                    default_famille = 0
+                
+                st.divider()
+                
+                # Reste du formulaire
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    new_libelle = st.text_input(
+                        "Libellé du compte *",
+                        value=default_libelle,
+                        max_chars=200,
+                        help="Description du compte (auto-rempli si le compte existe dans le plan comptable)",
+                        key="new_libelle_input"
+                    )
                     
-                    with col1:
-                        new_compte = st.number_input(
-                            "Numéro de compte *",
-                            min_value=0,
-                            step=1,
-                            format="%d",
-                            help="Numéro unique du compte comptable"
+                    new_montant = st.number_input(
+                        "Montant du budget (€) *",
+                        min_value=0,
+                        step=100,
+                        format="%d",
+                        help="Montant budgété pour ce poste",
+                        key="new_montant_input"
+                    )
+                
+                with col2:
+                    # Classe
+                    if auto_fill and default_classe:
+                        new_classe = st.text_input(
+                            "Classe *",
+                            value=default_classe,
+                            help="Classe comptable (auto-rempli)",
+                            key="new_classe_input"
                         )
-                        
-                        new_libelle = st.text_input(
-                            "Libellé du compte *",
-                            max_chars=200,
-                            help="Description du compte"
-                        )
-                        
-                        new_montant = st.number_input(
-                            "Montant du budget (€) *",
-                            min_value=0,
-                            step=100,
-                            format="%d",
-                            help="Montant budgété pour ce poste"
-                        )
-                    
-                    with col2:
-                        # Récupérer les classes existantes pour suggérer
+                    else:
                         classes_existantes = sorted(budget_df['classe'].unique())
                         new_classe = st.selectbox(
                             "Classe *",
-                            options=classes_existantes + ["Nouvelle classe..."],
-                            help="Classe comptable"
+                            options=[""] + classes_existantes,
+                            help="Classe comptable",
+                            key="new_classe_select"
                         )
                         
-                        if new_classe == "Nouvelle classe...":
-                            new_classe = st.text_input("Nom de la nouvelle classe *")
-                        
-                        # Récupérer les familles existantes
+                        if new_classe == "":
+                            new_classe = st.text_input("Ou entrer une nouvelle classe *", key="new_classe_manual")
+                    
+                    # Famille
+                    if auto_fill and default_famille > 0:
+                        new_famille = st.number_input(
+                            "Famille *",
+                            value=default_famille,
+                            min_value=0,
+                            step=1,
+                            help="Famille comptable (auto-rempli)",
+                            key="new_famille_input"
+                        )
+                    else:
                         familles_existantes = sorted(budget_df['famille'].unique())
                         famille_choice = st.selectbox(
                             "Famille *",
                             options=["Choisir existante", "Nouvelle famille"],
-                            help="Famille comptable"
+                            help="Famille comptable",
+                            key="famille_choice"
                         )
                         
                         if famille_choice == "Choisir existante":
-                            new_famille = st.selectbox("Sélectionner", options=familles_existantes)
+                            new_famille = st.selectbox("Sélectionner", options=familles_existantes, key="famille_select")
                         else:
-                            new_famille = st.number_input("Numéro de famille *", min_value=0, step=1)
-                    
-                    # Bouton de soumission
-                    submitted = st.form_submit_button("✨ Ajouter le compte", type="primary", use_container_width=True)
-                    
-                    if submitted:
+                            new_famille = st.number_input("Numéro de famille *", min_value=0, step=1, key="famille_manual")
+                
+                # Bouton d'ajout
+                st.divider()
+                
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    if st.button("✨ Ajouter le compte au budget", type="primary", use_container_width=True, key="add_compte_btn"):
                         # Validation
-                        if not new_libelle:
-                            st.error("❌ Le libellé est obligatoire")
-                        elif not new_classe or new_classe == "Nouvelle classe...":
-                            st.error("❌ La classe est obligatoire")
+                        errors = []
+                        
+                        if new_compte <= 0:
+                            errors.append("Le numéro de compte doit être supérieur à 0")
+                        
+                        if not new_libelle or new_libelle.strip() == "":
+                            errors.append("Le libellé est obligatoire")
+                        
+                        if not new_classe or new_classe.strip() == "":
+                            errors.append("La classe est obligatoire")
+                        
+                        if new_famille <= 0:
+                            errors.append("La famille est obligatoire")
+                        
+                        if errors:
+                            for error in errors:
+                                st.error(f"❌ {error}")
                         else:
                             try:
                                 # Vérifier si le compte existe déjà pour cette année
@@ -436,31 +505,57 @@ elif menu == "💰 Budget":
                                 ]
                                 
                                 if not existing.empty:
-                                    st.error(f"❌ Le compte {new_compte} existe déjà pour l'année {annee_filter}")
+                                    st.error(f"❌ Le compte {new_compte} existe déjà dans le budget {annee_filter}")
                                 else:
                                     # Insérer le nouveau compte
                                     new_line = {
                                         'compte': int(new_compte),
-                                        'libelle_compte': new_libelle,
+                                        'libelle_compte': new_libelle.strip(),
                                         'montant_budget': int(new_montant),
                                         'annee': int(annee_filter),
-                                        'classe': str(new_classe),
+                                        'classe': new_classe.strip(),
                                         'famille': int(new_famille)
                                     }
                                     
                                     supabase.table('budget').insert(new_line).execute()
                                     
-                                    st.success(f"✅ Compte {new_compte} ajouté avec succès!")
+                                    st.success(f"✅ Compte {new_compte} - {new_libelle} ajouté avec succès au budget {annee_filter}!")
                                     st.balloons()
+                                    
+                                    # Attendre un peu pour que l'utilisateur voie le message
+                                    import time
+                                    time.sleep(1)
                                     st.rerun()
                                     
                             except Exception as e:
                                 st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
                 
-                # Aperçu des comptes existants pour référence
-                with st.expander("📋 Voir les comptes existants pour référence"):
+                with col2:
+                    if st.button("🔄 Réinitialiser", use_container_width=True, key="reset_form_btn"):
+                        st.rerun()
+                
+                # Aide : Aperçu du plan comptable
+                st.divider()
+                with st.expander("📋 Consulter le plan comptable"):
+                    if not plan_df.empty:
+                        st.dataframe(
+                            plan_df[['compte', 'libelle_compte', 'classe', 'famille']],
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "compte": st.column_config.NumberColumn("Compte", format="%d"),
+                                "libelle_compte": "Libellé",
+                                "classe": "Classe",
+                                "famille": st.column_config.NumberColumn("Famille", format="%d")
+                            }
+                        )
+                    else:
+                        st.info("Le plan comptable est vide")
+                
+                # Aide : Comptes déjà dans le budget
+                with st.expander(f"📊 Comptes déjà dans le budget {annee_filter}"):
                     st.dataframe(
-                        filtered_budget[['compte', 'libelle_compte', 'classe', 'famille']].head(10),
+                        filtered_budget[['compte', 'libelle_compte', 'classe', 'famille', 'montant_budget']].sort_values('compte'),
                         use_container_width=True,
                         hide_index=True
                     )
