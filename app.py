@@ -759,102 +759,391 @@ elif menu == "💰 Budget":
 elif menu == "📝 Dépenses":
     st.markdown("<h1 class='main-header'>📝 Gestion des Dépenses</h1>", unsafe_allow_html=True)
     
-    tab1, tab2 = st.tabs(["📋 Liste des dépenses", "➕ Nouvelle dépense"])
+    depenses_df = get_depenses()
+    budget_df = get_budget()
     
-    with tab1:
-        depenses_df = get_depenses()
-        budget_df = get_budget()
+    if not depenses_df.empty:
+        # Merge avec le budget pour avoir les libellés
+        depenses_df = depenses_df.merge(
+            budget_df[['compte', 'libelle_compte', 'classe', 'famille']], 
+            on='compte', 
+            how='left',
+            suffixes=('', '_budget')
+        )
+        depenses_df['date'] = pd.to_datetime(depenses_df['date'])
+        depenses_df['annee'] = depenses_df['date'].dt.year
         
-        if not depenses_df.empty:
-            # Merge avec le budget pour avoir les libellés
-            depenses_df = depenses_df.merge(
-                budget_df[['compte', 'libelle_compte']], 
-                on='compte', 
-                how='left'
-            )
-            depenses_df['date'] = pd.to_datetime(depenses_df['date'])
+        # Convertir montant_du en numérique
+        depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
+        
+        # Filtres en haut
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            # Filtre par année
+            annees_depenses = sorted(depenses_df['annee'].unique(), reverse=True)
+            annee_dep_filter = st.selectbox("📅 Année", annees_depenses, key="depenses_annee")
+        
+        with col2:
+            # Filtre par compte
+            comptes_depenses = sorted(depenses_df['compte'].unique())
+            compte_filter = st.multiselect("🔢 Compte", options=comptes_depenses)
+        
+        with col3:
+            # Filtre par classe
+            classe_dep_filter = st.multiselect("🏷️ Classe", options=sorted(depenses_df['classe'].unique()))
+        
+        with col4:
+            # Filtre par fournisseur
+            fournisseur_filter = st.multiselect("🏢 Fournisseur", options=sorted(depenses_df['fournisseur'].unique()))
+        
+        # Application des filtres
+        filtered_depenses = depenses_df[depenses_df['annee'] == annee_dep_filter].copy()
+        
+        if compte_filter:
+            filtered_depenses = filtered_depenses[filtered_depenses['compte'].isin(compte_filter)]
+        if classe_dep_filter:
+            filtered_depenses = filtered_depenses[filtered_depenses['classe'].isin(classe_dep_filter)]
+        if fournisseur_filter:
+            filtered_depenses = filtered_depenses[filtered_depenses['fournisseur'].isin(fournisseur_filter)]
+        
+        # Statistiques FILTRÉES
+        st.divider()
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Nombre de dépenses", len(filtered_depenses))
+        with col2:
+            total_depenses = filtered_depenses['montant_du'].sum()
+            st.metric("Total", f"{total_depenses:,.2f} €")
+        with col3:
+            moyenne = filtered_depenses['montant_du'].mean() if len(filtered_depenses) > 0 else 0
+            st.metric("Moyenne", f"{moyenne:,.2f} €")
+        with col4:
+            # Budget total pour les comptes concernés
+            if not compte_filter:
+                budget_annee = budget_df[budget_df['annee'] == annee_dep_filter]['montant_budget'].sum()
+            else:
+                budget_annee = budget_df[
+                    (budget_df['annee'] == annee_dep_filter) & 
+                    (budget_df['compte'].isin(compte_filter))
+                ]['montant_budget'].sum()
             
-            # Filtres
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                date_debut = st.date_input("Du", datetime(2025, 1, 1), key="dep_debut")
-            with col2:
-                date_fin = st.date_input("Au", datetime.now(), key="dep_fin")
-            with col3:
-                fournisseur_filter = st.multiselect(
-                    "Fournisseur", 
-                    options=sorted(depenses_df['fournisseur'].unique())
-                )
+            if budget_annee > 0:
+                taux_realisation = (total_depenses / budget_annee * 100)
+                st.metric("Réalisé vs Budget", f"{taux_realisation:.1f}%", 
+                         delta=f"{total_depenses - budget_annee:,.0f} €")
+            else:
+                st.metric("Réalisé vs Budget", "N/A")
+        
+        st.divider()
+        
+        # Onglets
+        tab1, tab2, tab3, tab4 = st.tabs(["📋 Consulter", "✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer"])
+        
+        # =============== ONGLET 1 : CONSULTER ===============
+        with tab1:
+            st.subheader(f"Dépenses {annee_dep_filter} ({len(filtered_depenses)} lignes)")
             
-            # Application des filtres
-            filtered_depenses = depenses_df[
-                (depenses_df['date'] >= pd.Timestamp(date_debut)) & 
-                (depenses_df['date'] <= pd.Timestamp(date_fin))
-            ]
-            if fournisseur_filter:
-                filtered_depenses = filtered_depenses[filtered_depenses['fournisseur'].isin(fournisseur_filter)]
-            
-            # Statistiques
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Nombre de dépenses", len(filtered_depenses))
-            with col2:
-                st.metric("Total", f"{filtered_depenses['montant_du'].sum():,.2f} €")
-            with col3:
-                st.metric("Moyenne", f"{filtered_depenses['montant_du'].mean():,.2f} €")
-            
-            # Tableau des dépenses
-            st.subheader("Détail des dépenses")
-            display_df = filtered_depenses[['date', 'fournisseur', 'montant_du', 'libelle_compte', 'classe', 'commentaire']].copy()
+            # Tableau en lecture seule
+            display_df = filtered_depenses[['date', 'compte', 'libelle_compte', 'fournisseur', 'montant_du', 'classe', 'famille', 'commentaire']].copy()
             display_df['date'] = display_df['date'].dt.strftime('%d/%m/%Y')
             display_df = display_df.sort_values('date', ascending=False)
             
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
-    
-    with tab2:
-        st.subheader("Ajouter une nouvelle dépense")
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "date": "Date",
+                    "compte": st.column_config.NumberColumn("Compte", format="%d"),
+                    "libelle_compte": "Libellé compte",
+                    "fournisseur": "Fournisseur",
+                    "montant_du": st.column_config.NumberColumn("Montant (€)", format="%,.2f"),
+                    "classe": "Classe",
+                    "famille": st.column_config.NumberColumn("Famille", format="%d"),
+                    "commentaire": "Commentaire"
+                }
+            )
+            
+            # Export
+            st.divider()
+            csv = filtered_depenses.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Exporter en CSV",
+                data=csv,
+                file_name=f"depenses_{annee_dep_filter}.csv",
+                mime="text/csv"
+            )
         
-        budget_df = get_budget()
+        # =============== ONGLET 2 : MODIFIER ===============
+        with tab2:
+            st.subheader(f"Modifier les dépenses {annee_dep_filter}")
+            
+            st.info("💡 Modifiez les lignes directement dans le tableau. Toutes les colonnes sont éditables sauf l'ID.")
+            
+            # Tableau éditable
+            edited_depenses = st.data_editor(
+                filtered_depenses[['id', 'date', 'compte', 'fournisseur', 'montant_du', 'commentaire']],
+                use_container_width=True,
+                hide_index=True,
+                disabled=['id'],
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                    "date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+                    "compte": st.column_config.NumberColumn("Compte", format="%d", min_value=0),
+                    "fournisseur": st.column_config.TextColumn("Fournisseur", max_chars=200),
+                    "montant_du": st.column_config.NumberColumn("Montant (€)", format="%.2f", min_value=0),
+                    "commentaire": st.column_config.TextColumn("Commentaire", max_chars=500)
+                },
+                key="depenses_editor"
+            )
+            
+            # Boutons d'action
+            col1, col2, col3 = st.columns([1, 1, 2])
+            
+            with col1:
+                if st.button("💾 Enregistrer les modifications", type="primary", key="save_depenses_modif"):
+                    try:
+                        modifications = 0
+                        for idx, row in edited_depenses.iterrows():
+                            original_row = filtered_depenses[filtered_depenses['id'] == row['id']]
+                            if not original_row.empty:
+                                original = original_row.iloc[0]
+                                
+                                changed = False
+                                updates = {}
+                                
+                                # Comparer chaque champ
+                                if pd.Timestamp(row['date']).strftime('%Y-%m-%d') != original['date'].strftime('%Y-%m-%d'):
+                                    updates['date'] = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
+                                    changed = True
+                                
+                                if int(row['compte']) != int(original['compte']):
+                                    new_compte = int(row['compte'])
+                                    updates['compte'] = new_compte
+                                    # Mettre à jour classe et famille depuis le budget
+                                    compte_info = budget_df[budget_df['compte'] == new_compte]
+                                    if not compte_info.empty:
+                                        updates['classe'] = compte_info.iloc[0]['classe']
+                                        updates['famille'] = int(compte_info.iloc[0]['famille'])
+                                    changed = True
+                                
+                                if str(row['fournisseur']) != str(original['fournisseur']):
+                                    updates['fournisseur'] = str(row['fournisseur'])
+                                    changed = True
+                                
+                                if float(row['montant_du']) != float(original['montant_du']):
+                                    updates['montant_du'] = float(row['montant_du'])
+                                    changed = True
+                                
+                                commentaire_new = str(row['commentaire']) if pd.notna(row['commentaire']) else None
+                                commentaire_old = str(original['commentaire']) if pd.notna(original['commentaire']) else None
+                                if commentaire_new != commentaire_old:
+                                    updates['commentaire'] = commentaire_new
+                                    changed = True
+                                
+                                if changed:
+                                    supabase.table('depenses').update(updates).eq('id', int(row['id'])).execute()
+                                    modifications += 1
+                        
+                        if modifications > 0:
+                            st.success(f"✅ {modifications} ligne(s) mise(s) à jour avec succès!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.info("ℹ️ Aucune modification détectée")
+                    except Exception as e:
+                        st.error(f"❌ Erreur lors de la sauvegarde: {str(e)}")
+            
+            with col2:
+                if st.button("🔄 Annuler", key="cancel_depenses_modif"):
+                    st.rerun()
         
-        with st.form("nouvelle_depense"):
+        # =============== ONGLET 3 : AJOUTER ===============
+        with tab3:
+            st.subheader(f"Ajouter une nouvelle dépense")
+            
+            st.info("💡 Entrez le compte. Si le compte existe, le libellé, classe et famille seront auto-remplis.")
+            
+            # Numéro de compte
+            new_dep_compte = st.number_input(
+                "Numéro de compte *",
+                min_value=0,
+                step=1,
+                format="%d",
+                help="Le compte doit exister dans le budget",
+                key="new_dep_compte"
+            )
+            
+            # Chercher dans le budget
+            compte_budget = None
+            if new_dep_compte > 0:
+                compte_budget = budget_df[budget_df['compte'] == new_dep_compte]
+            
+            # Afficher info si trouvé
+            if compte_budget is not None and not compte_budget.empty:
+                st.success(f"✅ Compte trouvé : {compte_budget.iloc[0]['libelle_compte']} (Classe: {compte_budget.iloc[0]['classe']}, Famille: {compte_budget.iloc[0]['famille']})")
+                auto_classe = compte_budget.iloc[0]['classe']
+                auto_famille = int(compte_budget.iloc[0]['famille'])
+            elif new_dep_compte > 0:
+                st.warning(f"⚠️ Le compte {new_dep_compte} n'existe pas dans le budget. Veuillez utiliser un compte valide.")
+                auto_classe = None
+                auto_famille = None
+            else:
+                auto_classe = None
+                auto_famille = None
+            
+            st.divider()
+            
             col1, col2 = st.columns(2)
             
             with col1:
-                date_depense = st.date_input("Date", datetime.now())
-                fournisseur = st.text_input("Fournisseur")
-                montant = st.number_input("Montant (€)", min_value=0.0, step=0.01)
+                new_dep_date = st.date_input(
+                    "Date *",
+                    value=datetime.now(),
+                    help="Date de la dépense",
+                    key="new_dep_date"
+                )
+                
+                new_dep_fournisseur = st.text_input(
+                    "Fournisseur *",
+                    max_chars=200,
+                    help="Nom du fournisseur",
+                    key="new_dep_fournisseur"
+                )
             
             with col2:
-                # Sélection du compte
-                comptes_options = budget_df.apply(
-                    lambda x: f"{x['compte']} - {x['libelle_compte']}", axis=1
-                ).tolist()
-                compte_selected = st.selectbox("Compte budgétaire", comptes_options)
+                new_dep_montant = st.number_input(
+                    "Montant (€) *",
+                    min_value=0.0,
+                    step=0.01,
+                    format="%.2f",
+                    help="Montant de la dépense",
+                    key="new_dep_montant"
+                )
                 
-                commentaire = st.text_area("Commentaire (optionnel)")
+                new_dep_commentaire = st.text_area(
+                    "Commentaire (optionnel)",
+                    max_chars=500,
+                    help="Commentaire libre",
+                    key="new_dep_commentaire"
+                )
             
-            submitted = st.form_submit_button("💾 Enregistrer", type="primary")
+            # Boutons
+            st.divider()
+            col1, col2 = st.columns([1, 1])
             
-            if submitted and fournisseur and montant > 0:
-                compte_num = int(compte_selected.split(' - ')[0])
-                compte_info = budget_df[budget_df['compte'] == compte_num].iloc[0]
-                
-                nouvelle_depense = {
-                    'date': date_depense.strftime('%Y-%m-%d'),
-                    'fournisseur': fournisseur,
-                    'montant_du': montant,
-                    'compte': compte_num,
-                    'commentaire': commentaire if commentaire else None,
-                    'classe': compte_info['classe'],
-                    'famille': int(compte_info['famille'])
-                }
-                
-                try:
-                    add_depense(nouvelle_depense)
-                    st.success("✅ Dépense enregistrée!")
+            with col1:
+                if st.button("✨ Ajouter la dépense", type="primary", use_container_width=True, key="add_depense_btn"):
+                    errors = []
+                    
+                    if new_dep_compte <= 0:
+                        errors.append("Le compte est obligatoire")
+                    
+                    if auto_classe is None or auto_famille is None:
+                        errors.append(f"Le compte {new_dep_compte} n'existe pas dans le budget")
+                    
+                    if not new_dep_fournisseur or new_dep_fournisseur.strip() == "":
+                        errors.append("Le fournisseur est obligatoire")
+                    
+                    if new_dep_montant <= 0:
+                        errors.append("Le montant doit être supérieur à 0")
+                    
+                    if errors:
+                        for error in errors:
+                            st.error(f"❌ {error}")
+                    else:
+                        try:
+                            nouvelle_depense = {
+                                'date': new_dep_date.strftime('%Y-%m-%d'),
+                                'compte': int(new_dep_compte),
+                                'fournisseur': new_dep_fournisseur.strip(),
+                                'montant_du': float(new_dep_montant),
+                                'classe': auto_classe,
+                                'famille': auto_famille,
+                                'commentaire': new_dep_commentaire.strip() if new_dep_commentaire else None
+                            }
+                            
+                            supabase.table('depenses').insert(nouvelle_depense).execute()
+                            
+                            st.success(f"✅ Dépense de {new_dep_montant:.2f} € ajoutée avec succès!")
+                            st.balloons()
+                            time.sleep(1)
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
+            
+            with col2:
+                if st.button("🔄 Réinitialiser", use_container_width=True, key="reset_depense_form"):
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Erreur: {str(e)}")
+            
+            # Aide
+            st.divider()
+            with st.expander(f"📊 Comptes disponibles dans le budget {annee_dep_filter}"):
+                budget_annee = budget_df[budget_df['annee'] == annee_dep_filter]
+                if not budget_annee.empty:
+                    st.dataframe(
+                        budget_annee[['compte', 'libelle_compte', 'classe', 'famille']].sort_values('compte'),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info(f"Aucun compte dans le budget {annee_dep_filter}")
+        
+        # =============== ONGLET 4 : SUPPRIMER ===============
+        with tab4:
+            st.subheader(f"Supprimer des dépenses {annee_dep_filter}")
+            
+            st.warning("⚠️ La suppression est définitive et ne peut pas être annulée.")
+            
+            if not filtered_depenses.empty:
+                st.info("💡 Sélectionnez les dépenses à supprimer.")
+                
+                # Sélection
+                ids_to_delete = st.multiselect(
+                    "Sélectionner les dépenses à supprimer",
+                    options=filtered_depenses['id'].tolist(),
+                    format_func=lambda x: f"ID {x} - {filtered_depenses[filtered_depenses['id']==x]['date'].dt.strftime('%d/%m/%Y').values[0]} - {filtered_depenses[filtered_depenses['id']==x]['fournisseur'].values[0]} - {filtered_depenses[filtered_depenses['id']==x]['montant_du'].values[0]:.2f} €"
+                )
+                
+                if ids_to_delete:
+                    st.warning(f"🗑️ {len(ids_to_delete)} dépense(s) sélectionnée(s) pour suppression")
+                    
+                    # Aperçu
+                    lines_to_delete = filtered_depenses[filtered_depenses['id'].isin(ids_to_delete)]
+                    display_delete = lines_to_delete[['date', 'fournisseur', 'montant_du', 'libelle_compte']].copy()
+                    display_delete['date'] = display_delete['date'].dt.strftime('%d/%m/%Y')
+                    st.dataframe(
+                        display_delete,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    col1, col2, col3 = st.columns([1, 1, 2])
+                    
+                    with col1:
+                        if st.button("🗑️ Confirmer la suppression", type="secondary", key="confirm_delete_depenses"):
+                            try:
+                                for id_to_del in ids_to_delete:
+                                    supabase.table('depenses').delete().eq('id', id_to_del).execute()
+                                
+                                st.success(f"✅ {len(ids_to_delete)} dépense(s) supprimée(s) avec succès!")
+                                time.sleep(1)
+                                st.rerun()
+                                
+                            except Exception as e:
+                                st.error(f"❌ Erreur lors de la suppression: {str(e)}")
+                    
+                    with col2:
+                        if st.button("❌ Annuler", key="cancel_delete_depenses"):
+                            st.rerun()
+                else:
+                    st.info("ℹ️ Sélectionnez au moins une dépense pour activer la suppression")
+            else:
+                st.info("ℹ️ Aucune dépense à supprimer avec les filtres actuels")
+    else:
+        st.info("Aucune dépense enregistrée")
 
 # ==================== COPROPRIÉTAIRES ====================
 elif menu == "👥 Copropriétaires":
