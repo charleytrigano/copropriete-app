@@ -115,29 +115,58 @@ if menu == "📊 Tableau de Bord":
     depenses_df = get_depenses()
     
     if not budget_df.empty and not depenses_df.empty:
-        # Conversion des dates
+        # Conversion des dates et ajout de l'année
         depenses_df['date'] = pd.to_datetime(depenses_df['date'])
+        depenses_df['annee'] = depenses_df['date'].dt.year
+        depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
         
-        # Filtres de date
-        col1, col2 = st.columns(2)
+        # FILTRES EN HAUT
+        col1, col2, col3 = st.columns(3)
+        
         with col1:
-            date_debut = st.date_input("Date de début", datetime(2025, 1, 1))
+            # Filtre par année
+            annees_disponibles = sorted(depenses_df['annee'].unique(), reverse=True)
+            annee_filter = st.selectbox("📅 Année", annees_disponibles, key="tdb_annee")
+        
         with col2:
-            date_fin = st.date_input("Date de fin", datetime.now())
+            # Filtre par classe
+            if 'classe' in depenses_df.columns:
+                classes_disponibles = ['Toutes'] + sorted([str(c) for c in depenses_df['classe'].dropna().unique()])
+                classe_filter = st.selectbox("🏷️ Classe", classes_disponibles, key="tdb_classe")
+            else:
+                classe_filter = 'Toutes'
         
-        # Filtrer les dépenses
-        depenses_filtered = depenses_df[
-            (depenses_df['date'] >= pd.Timestamp(date_debut)) & 
-            (depenses_df['date'] <= pd.Timestamp(date_fin))
-        ]
+        with col3:
+            # Filtre par compte
+            comptes_disponibles = ['Tous'] + sorted(depenses_df['compte'].dropna().unique().tolist())
+            compte_filter = st.selectbox("🔢 Compte", comptes_disponibles, key="tdb_compte")
         
-        # Calculs
-        total_budget = budget_df['montant_budget'].sum()
+        # Application des filtres sur les dépenses
+        depenses_filtered = depenses_df[depenses_df['annee'] == annee_filter].copy()
+        
+        if classe_filter != 'Toutes' and 'classe' in depenses_filtered.columns:
+            depenses_filtered = depenses_filtered[depenses_filtered['classe'] == classe_filter]
+        
+        if compte_filter != 'Tous':
+            depenses_filtered = depenses_filtered[depenses_filtered['compte'] == compte_filter]
+        
+        # Filtrer le budget par année et les mêmes critères
+        budget_filtered = budget_df[budget_df['annee'] == annee_filter].copy()
+        
+        if classe_filter != 'Toutes' and 'classe' in budget_filtered.columns:
+            budget_filtered = budget_filtered[budget_filtered['classe'] == classe_filter]
+        
+        if compte_filter != 'Tous':
+            budget_filtered = budget_filtered[budget_filtered['compte'] == compte_filter]
+        
+        # Calculs avec données filtrées
+        total_budget = budget_filtered['montant_budget'].sum()
         total_depenses = depenses_filtered['montant_du'].sum()
         ecart = total_budget - total_depenses
         pourcentage = (total_depenses / total_budget * 100) if total_budget > 0 else 0
         
         # Métriques principales
+        st.divider()
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -145,52 +174,71 @@ if menu == "📊 Tableau de Bord":
         with col2:
             st.metric("Dépenses", f"{total_depenses:,.2f} €", delta=f"{pourcentage:.1f}%")
         with col3:
-            st.metric("Écart", f"{ecart:,.2f} €", delta="Disponible")
+            delta_color = "normal" if ecart >= 0 else "inverse"
+            st.metric("Écart", f"{ecart:,.2f} €", delta=f"{ecart:,.0f} €", delta_color=delta_color)
         with col4:
             st.metric("Nb Dépenses", len(depenses_filtered))
         
         st.divider()
         
-        # Graphiques
+        # Graphiques avec données filtrées
         col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("Budget vs Dépenses par Famille")
-            # Agrégation par famille
-            budget_famille = budget_df.groupby('famille')['montant_budget'].sum().reset_index()
-            depenses_famille = depenses_filtered.groupby('famille')['montant_du'].sum().reset_index()
-            
-            comparaison = budget_famille.merge(depenses_famille, on='famille', how='left').fillna(0)
-            comparaison.columns = ['Famille', 'Budget', 'Dépenses']
-            
-            fig = go.Figure()
-            fig.add_trace(go.Bar(name='Budget', x=comparaison['Famille'], y=comparaison['Budget'], marker_color='lightblue'))
-            fig.add_trace(go.Bar(name='Dépenses', x=comparaison['Famille'], y=comparaison['Dépenses'], marker_color='salmon'))
-            fig.update_layout(barmode='group', height=400)
-            st.plotly_chart(fig, use_container_width=True)
+            # Agrégation par famille sur données filtrées
+            if 'famille' in budget_filtered.columns and 'famille' in depenses_filtered.columns:
+                budget_famille = budget_filtered.groupby('famille')['montant_budget'].sum().reset_index()
+                depenses_famille = depenses_filtered.groupby('famille')['montant_du'].sum().reset_index()
+                
+                comparaison = budget_famille.merge(depenses_famille, on='famille', how='left').fillna(0)
+                comparaison.columns = ['Famille', 'Budget', 'Dépenses']
+                
+                fig = go.Figure()
+                fig.add_trace(go.Bar(name='Budget', x=comparaison['Famille'], y=comparaison['Budget'], marker_color='lightblue'))
+                fig.add_trace(go.Bar(name='Dépenses', x=comparaison['Famille'], y=comparaison['Dépenses'], marker_color='salmon'))
+                fig.update_layout(barmode='group', height=400)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Données de famille non disponibles")
         
         with col2:
             st.subheader("Répartition du Budget")
-            fig = px.pie(budget_famille, values='montant_budget', names='famille', 
-                         title='Distribution du budget par famille')
-            fig.update_traces(textposition='inside', textinfo='percent+label')
+            if 'famille' in budget_filtered.columns and not budget_filtered.empty:
+                budget_famille = budget_filtered.groupby('famille')['montant_budget'].sum().reset_index()
+                fig = px.pie(budget_famille, values='montant_budget', names='famille', 
+                             title=f'Distribution du budget {annee_filter}')
+                fig.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Aucune donnée budgétaire disponible")
+        
+        # Évolution mensuelle (données filtrées)
+        st.subheader(f"Évolution des Dépenses Mensuelles - {annee_filter}")
+        if not depenses_filtered.empty:
+            depenses_filtered['mois'] = depenses_filtered['date'].dt.to_period('M').astype(str)
+            evolution = depenses_filtered.groupby('mois')['montant_du'].sum().reset_index()
+            
+            fig = px.line(evolution, x='mois', y='montant_du', markers=True,
+                          labels={'montant_du': 'Montant (€)', 'mois': 'Mois'})
+            fig.update_traces(line_color='#1f77b4', line_width=3)
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Aucune dépense pour cette période/filtre")
         
-        # Évolution mensuelle
-        st.subheader("Évolution des Dépenses Mensuelles")
-        depenses_filtered['mois'] = depenses_filtered['date'].dt.to_period('M').astype(str)
-        evolution = depenses_filtered.groupby('mois')['montant_du'].sum().reset_index()
-        
-        fig = px.line(evolution, x='mois', y='montant_du', markers=True,
-                      labels={'montant_du': 'Montant (€)', 'mois': 'Mois'})
-        fig.update_traces(line_color='#1f77b4', line_width=3)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Top dépenses
-        st.subheader("Top 10 des Dépenses")
-        top_depenses = depenses_filtered.nlargest(10, 'montant_du')[['date', 'fournisseur', 'montant_du', 'commentaire']]
-        top_depenses['date'] = top_depenses['date'].dt.strftime('%d/%m/%Y')
-        st.dataframe(top_depenses, use_container_width=True, hide_index=True)
+        # Top dépenses (données filtrées)
+        st.subheader(f"Top 10 des Dépenses - {annee_filter}")
+        if not depenses_filtered.empty:
+            top_depenses = depenses_filtered.nlargest(10, 'montant_du')[['date', 'fournisseur', 'montant_du', 'commentaire']].copy()
+            top_depenses['date'] = top_depenses['date'].dt.strftime('%d/%m/%Y')
+            st.dataframe(top_depenses, use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucune dépense à afficher")
+    else:
+        if budget_df.empty:
+            st.warning("⚠️ Aucune donnée budgétaire disponible")
+        if depenses_df.empty:
+            st.info("ℹ️ Aucune dépense enregistrée")
 
 # ==================== BUDGET ====================
 elif menu == "💰 Budget":
