@@ -1343,28 +1343,200 @@ elif menu == "📈 Analyses":
     depenses_df = get_depenses()
     budget_df = get_budget()
     
-    if not depenses_df.empty:
+    if not depenses_df.empty and not budget_df.empty:
         depenses_df['date'] = pd.to_datetime(depenses_df['date'])
-        depenses_df = depenses_df.merge(budget_df[['compte', 'libelle_compte']], on='compte', how='left')
+        depenses_df['annee'] = depenses_df['date'].dt.year
+        depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
+        
+        # FILTRE PAR ANNÉE
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            annees_disponibles = sorted(depenses_df['annee'].unique(), reverse=True)
+            if annees_disponibles:
+                annee_analyse = st.selectbox("📅 Année", annees_disponibles, key="analyse_annee")
+            else:
+                annee_analyse = datetime.now().year
+        
+        # Filtrer par année
+        depenses_annee = depenses_df[depenses_df['annee'] == annee_analyse].copy()
+        budget_annee = budget_df[budget_df['annee'] == annee_analyse].copy()
+        
+        # ========== TABLEAU ANALYSE PAR CLASSE ==========
+        st.subheader(f"📊 Analyse par Classe - {annee_analyse}")
+        
+        # Définir les classes et leurs libellés
+        classes_config = {
+            '1A': 'Charges courantes',
+            '1B': 'Entretien courant',
+            '2': 'Électricité/Chauffage',
+            '3': 'Assurances',
+            '4': 'Impôts et taxes',
+            '5': 'Travaux',
+            '6': 'Honoraires',
+            '7': 'Charges financières'
+        }
+        
+        # Calculer pour chaque classe
+        analyse_rows = []
+        
+        # Sous-groupes pour les sous-totaux
+        sous_groupes = {
+            'S/T 1A+1B': ['1A', '1B'],
+            'S/T 2': ['2'],
+            'S/T 3': ['3'],
+            'S/T 4': ['4'],
+            'S/T 5': ['5'],
+            'S/T 6': ['6'],
+            'S/T 7': ['7']
+        }
+        
+        total_budget = 0
+        total_depenses = 0
+        
+        for classe, libelle in classes_config.items():
+            # Budget pour cette classe
+            budget_classe = budget_annee[budget_annee['classe'] == classe]['montant_budget'].sum()
+            # Dépenses pour cette classe
+            depenses_classe = depenses_annee[depenses_annee['classe'] == classe]['montant_du'].sum()
+            # Écart
+            ecart = budget_classe - depenses_classe
+            # Pourcentage
+            pct = (depenses_classe / budget_classe * 100) if budget_classe > 0 else 0
+            
+            analyse_rows.append({
+                'classe': classe,
+                'libelle_classe': libelle,
+                'montant_budget': budget_classe,
+                'montant_depenses': depenses_classe,
+                'ecart': ecart,
+                'pct': pct
+            })
+            
+            total_budget += budget_classe
+            total_depenses += depenses_classe
+            
+            # Ajouter sous-total après certaines classes
+            for st_label, st_classes in sous_groupes.items():
+                if classe == st_classes[-1]:  # Dernière classe du groupe
+                    st_budget = sum([row['montant_budget'] for row in analyse_rows if row['classe'] in st_classes])
+                    st_depenses = sum([row['montant_depenses'] for row in analyse_rows if row['classe'] in st_classes])
+                    st_ecart = st_budget - st_depenses
+                    st_pct = (st_depenses / st_budget * 100) if st_budget > 0 else 0
+                    
+                    analyse_rows.append({
+                        'classe': st_label,
+                        'libelle_classe': 'Sous-total',
+                        'montant_budget': st_budget,
+                        'montant_depenses': st_depenses,
+                        'ecart': st_ecart,
+                        'pct': st_pct
+                    })
+        
+        # Ligne vide
+        analyse_rows.append({
+            'classe': '',
+            'libelle_classe': '',
+            'montant_budget': None,
+            'montant_depenses': None,
+            'ecart': None,
+            'pct': None
+        })
+        
+        # Total général
+        total_ecart = total_budget - total_depenses
+        total_pct = (total_depenses / total_budget * 100) if total_budget > 0 else 0
+        
+        analyse_rows.append({
+            'classe': 'TOTAL GÉNÉRAL',
+            'libelle_classe': '',
+            'montant_budget': total_budget,
+            'montant_depenses': total_depenses,
+            'ecart': total_ecart,
+            'pct': total_pct
+        })
+        
+        # Créer le DataFrame
+        analyse_df = pd.DataFrame(analyse_rows)
+        
+        # Fonction pour styler les lignes
+        def style_row(row):
+            if row['classe'] in ['TOTAL GÉNÉRAL']:
+                return ['background-color: #1f77b4; color: white; font-weight: bold'] * len(row)
+            elif row['classe'].startswith('S/T'):
+                return ['background-color: #e6f2ff; font-weight: bold'] * len(row)
+            elif row['classe'] == '':
+                return ['background-color: white'] * len(row)
+            else:
+                return [''] * len(row)
+        
+        # Afficher le tableau
+        st.dataframe(
+            analyse_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "classe": st.column_config.TextColumn("Classe", width="small"),
+                "libelle_classe": st.column_config.TextColumn("Libellé", width="medium"),
+                "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%,.0f"),
+                "montant_depenses": st.column_config.NumberColumn("Dépenses (€)", format="%,.2f"),
+                "ecart": st.column_config.NumberColumn("Écart (€)", format="%,.2f"),
+                "pct": st.column_config.NumberColumn("% Réalisé", format="%.1f%%")
+            }
+        )
+        
+        # Export
+        st.divider()
+        csv = analyse_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Exporter l'analyse en CSV",
+            data=csv,
+            file_name=f"analyse_classe_{annee_analyse}.csv",
+            mime="text/csv"
+        )
+        
+        st.divider()
+        
+        # Graphiques existants
+        # Merge avec libellé compte pour les analyses suivantes
+        if not budget_annee.empty:
+            budget_unique = budget_annee.drop_duplicates(subset=['compte'], keep='first')[['compte', 'libelle_compte']]
+            depenses_annee = depenses_annee.merge(budget_unique, on='compte', how='left')
         
         st.subheader("📊 Top Fournisseurs")
-        top_fournisseurs = depenses_df.groupby('fournisseur')['montant_du'].agg(['sum', 'count']).reset_index()
-        top_fournisseurs.columns = ['Fournisseur', 'Total (€)', 'Nb factures']
-        top_fournisseurs = top_fournisseurs.sort_values('Total (€)', ascending=False).head(10)
-        
-        fig = px.bar(top_fournisseurs, x='Fournisseur', y='Total (€)', color='Nb factures')
-        st.plotly_chart(fig, use_container_width=True)
+        if not depenses_annee.empty:
+            top_fournisseurs = depenses_annee.groupby('fournisseur')['montant_du'].agg(['sum', 'count']).reset_index()
+            top_fournisseurs.columns = ['Fournisseur', 'Total (€)', 'Nb factures']
+            top_fournisseurs = top_fournisseurs.sort_values('Total (€)', ascending=False).head(10)
+            
+            fig = px.bar(top_fournisseurs, x='Fournisseur', y='Total (€)', color='Nb factures')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Aucune dépense pour cette année")
         
         st.subheader("💰 Dépenses par Classe")
-        depenses_classe = depenses_df.groupby('classe')['montant_du'].sum().reset_index()
-        fig = px.pie(depenses_classe, values='montant_du', names='classe')
-        st.plotly_chart(fig, use_container_width=True)
+        if not depenses_annee.empty and 'classe' in depenses_annee.columns:
+            depenses_classe = depenses_annee.groupby('classe')['montant_du'].sum().reset_index()
+            fig = px.pie(depenses_classe, values='montant_du', names='classe',
+                        title=f'Répartition des dépenses {annee_analyse}')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Données de classe non disponibles")
         
         st.subheader("📅 Évolution Mensuelle")
-        depenses_df['mois'] = depenses_df['date'].dt.to_period('M').astype(str)
-        evolution = depenses_df.groupby('mois')['montant_du'].sum().reset_index()
-        fig = px.area(evolution, x='mois', y='montant_du')
-        st.plotly_chart(fig, use_container_width=True)
+        if not depenses_annee.empty:
+            depenses_annee['mois'] = depenses_annee['date'].dt.to_period('M').astype(str)
+            evolution = depenses_annee.groupby('mois')['montant_du'].sum().reset_index()
+            fig = px.area(evolution, x='mois', y='montant_du',
+                         labels={'montant_du': 'Montant (€)', 'mois': 'Mois'},
+                         title=f'Évolution mensuelle {annee_analyse}')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Aucune dépense pour cette année")
+    else:
+        if budget_df.empty:
+            st.warning("⚠️ Aucune donnée budgétaire disponible")
+        if depenses_df.empty:
+            st.info("ℹ️ Aucune dépense enregistrée")
 
 # ==================== PLAN COMPTABLE ====================
 elif menu == "📋 Plan Comptable":
