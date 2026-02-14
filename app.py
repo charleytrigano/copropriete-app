@@ -801,15 +801,20 @@ elif menu == "📝 Dépenses":
     budget_df = get_budget()
     
     if not depenses_df.empty:
+        # Convertir les dates d'abord pour extraire l'année
+        depenses_df['date'] = pd.to_datetime(depenses_df['date'])
+        depenses_df['annee'] = depenses_df['date'].dt.year
+        
+        # Prendre seulement les comptes uniques du budget (éviter les doublons d'années)
+        budget_unique = budget_df.drop_duplicates(subset=['compte'], keep='first')[['compte', 'libelle_compte', 'classe', 'famille']]
+        
         # Merge avec le budget pour avoir les libellés
         depenses_df = depenses_df.merge(
-            budget_df[['compte', 'libelle_compte', 'classe', 'famille']], 
+            budget_unique, 
             on='compte', 
             how='left',
             suffixes=('', '_budget')
         )
-        depenses_df['date'] = pd.to_datetime(depenses_df['date'])
-        depenses_df['annee'] = depenses_df['date'].dt.year
         
         # Convertir montant_du en numérique
         depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
