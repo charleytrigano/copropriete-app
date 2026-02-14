@@ -805,16 +805,22 @@ elif menu == "📝 Dépenses":
         depenses_df['date'] = pd.to_datetime(depenses_df['date'])
         depenses_df['annee'] = depenses_df['date'].dt.year
         
-        # Prendre seulement les comptes uniques du budget (éviter les doublons d'années)
-        budget_unique = budget_df.drop_duplicates(subset=['compte'], keep='first')[['compte', 'libelle_compte', 'classe', 'famille']]
-        
-        # Merge avec le budget pour avoir les libellés
-        depenses_df = depenses_df.merge(
-            budget_unique, 
-            on='compte', 
-            how='left',
-            suffixes=('', '_budget')
-        )
+        # Merge avec le budget SEULEMENT s'il n'est pas vide et a les bonnes colonnes
+        if not budget_df.empty and all(col in budget_df.columns for col in ['compte', 'libelle_compte', 'classe', 'famille']):
+            # Prendre seulement les comptes uniques du budget (éviter les doublons d'années)
+            budget_unique = budget_df.drop_duplicates(subset=['compte'], keep='first')[['compte', 'libelle_compte', 'classe', 'famille']]
+            
+            # Merge avec le budget pour avoir les libellés
+            depenses_df = depenses_df.merge(
+                budget_unique, 
+                on='compte', 
+                how='left',
+                suffixes=('', '_budget')
+            )
+        else:
+            # Si pas de budget, créer des colonnes vides
+            if 'libelle_compte' not in depenses_df.columns:
+                depenses_df['libelle_compte'] = 'N/A'
         
         # Convertir montant_du en numérique
         depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
