@@ -23,6 +23,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# v20260218_111053 — Fix Alur base = total_bud
 # ==================== FONCTIONS DB ====================
 def get_budget():
     try:
@@ -1178,4 +1179,9 @@ elif menu == "📋 Plan Comptable":
                 fam_cnt = filt['famille'].value_counts().reset_index()
                 fam_cnt.columns = ['Famille','Nb comptes']
                 fig = px.pie(fam_cnt, values='Nb comptes', names='Famille', title='Comptes par famille')
-                s
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("⚠️ Aucune donnée dans le plan comptable.")
+
+st.divider()
+st.markdown("<div style='text-align: center; color: #666;'>🏢 Gestion de Copropriété — v2.0</div>", unsafe_allow_html=True)
