@@ -295,14 +295,21 @@ elif menu == "💰 Budget":
         with tab2:
             subtab1, subtab2, subtab3 = st.tabs(["✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer"])
             with subtab1:
+                bud_edit_df = filt[['id','compte','libelle_compte','montant_budget','classe','famille']].copy()
+                bud_edit_df['compte'] = bud_edit_df['compte'].astype(str).fillna('')
+                bud_edit_df['libelle_compte'] = bud_edit_df['libelle_compte'].astype(str).fillna('')
+                bud_edit_df['montant_budget'] = pd.to_numeric(bud_edit_df['montant_budget'], errors='coerce').fillna(0.0)
+                bud_edit_df['classe'] = bud_edit_df['classe'].astype(str).fillna('')
+                bud_edit_df['famille'] = bud_edit_df['famille'].astype(str).fillna('')
                 edited = st.data_editor(
-                    filt[['id','compte','libelle_compte','montant_budget','classe','famille']],
+                    bud_edit_df,
                     use_container_width=True, hide_index=True, disabled=['id'],
                     column_config={
                         "compte": st.column_config.TextColumn("Compte"),
                         "libelle_compte": st.column_config.TextColumn("Libellé"),
                         "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%.0f", min_value=0),
                         "classe": st.column_config.SelectboxColumn("Classe", options=['1A','1B','2','3','4','5','6','7']),
+                        "famille": st.column_config.TextColumn("Famille"),
                     }, key="budget_editor"
                 )
                 if st.button("💾 Enregistrer", type="primary", key="save_bud"):
