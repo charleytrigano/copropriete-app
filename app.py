@@ -110,6 +110,7 @@ def calculer_appels(copro_df, montants_par_type):
         row = {
             'Lot': cop.get('lot',''), 'Copropriétaire': cop.get('nom',''),
             'Étage': cop.get('etage',''), 'Usage': cop.get('usage',''),
+            '_tantieme_general': float(cop.get('tantieme_general', 0) or 0),  # pour calcul Alur
         }
         row.update({f"{CHARGES_CONFIG[k]['emoji']} {CHARGES_CONFIG[k]['label']}": v for k, v in detail.items()})
         row['💰 TOTAL Annuel (€)'] = round(total_annuel, 2)
@@ -681,20 +682,17 @@ elif menu == "🔄 Répartition":
                 appels_df[f'🎯 APPEL {label_trim} (€)'] = (appels_df['💰 TOTAL Annuel (€)'] / nb_appels).round(2)
 
                 # Ajouter la cotisation Alur (répartie sur tantièmes généraux /10000)
-                appels_df['🏛️ Alur (€)'] = appels_df.apply(
-                    lambda row: round(
-                        (float(copro_df[copro_df['nom'] == row['Copropriétaire']]['tantieme_general'].values[0])
-                         / 10000 * alur_par_appel)
-                        if len(copro_df[copro_df['nom'] == row['Copropriétaire']]) > 0 else 0,
-                        2
-                    ), axis=1
-                )
+                # Utilise _tantieme_general stocké directement dans appels_df (évite le lookup par nom bugué)
+                appels_df['🏛️ Alur (€)'] = (appels_df['_tantieme_general'] / 10000 * alur_par_appel).round(2)
                 appels_df[f'🎯 TOTAL {label_trim} avec Alur (€)'] = (
                     appels_df[f'🎯 APPEL {label_trim} (€)'] + appels_df['🏛️ Alur (€)']
                 ).round(2)
 
                 show_detail = st.checkbox("Afficher le détail par type de charge", value=False, key="show_det")
 
+                # Supprimer la colonne technique avant affichage
+                if '_tantieme_general' in appels_df.columns:
+                    appels_df = appels_df.drop(columns=['_tantieme_general'])
                 detail_cols = [f"{CHARGES_CONFIG[k]['emoji']} {CHARGES_CONFIG[k]['label']}" for k in CHARGES_CONFIG]
                 base_cols = ['Lot','Copropriétaire','Étage','Usage']
                 alur_cols = ['🏛️ Alur (€)', f'🎯 TOTAL {label_trim} avec Alur (€)']
