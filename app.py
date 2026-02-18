@@ -646,11 +646,12 @@ elif menu == "🔄 Répartition":
                 with col1:
                     alur_taux = st.number_input("Taux Alur (%)", min_value=5.0, max_value=20.0,
                         value=5.0, step=0.5, key="alur_taux",
-                        help="Minimum légal = 5% du budget prévisionnel (loi Alur art. 14-2)")
+                        help="Minimum légal = 5% du budget prévisionnel voté en AG (loi Alur art. 14-2)")
                 with col2:
-                    alur_annuel = round(total_configure * alur_taux / 100, 2)
+                    # BASE CORRECTE : budget total voté (total_bud), pas les montants configurés
+                    alur_annuel = round(total_bud * alur_taux / 100, 2)
                     st.metric("Fonds de travaux annuel", f"{alur_annuel:,.2f} €",
-                        help=f"{alur_taux}% × {total_configure:,.0f} € de budget")
+                        help=f"{alur_taux}% × {total_bud:,.0f} € (budget voté en AG)")
                 with col3:
                     alur_par_appel = round(alur_annuel / nb_appels, 2)
                     st.metric(f"Alur par appel ({label_trim})", f"{alur_par_appel:,.2f} €")
