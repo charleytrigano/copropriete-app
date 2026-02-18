@@ -426,14 +426,20 @@ elif menu == "📝 Dépenses":
             st.download_button("📥 Exporter CSV", dep_f.to_csv(index=False).encode('utf-8'), f"depenses_{annee_dep}.csv", "text/csv")
 
         with tab2:
+            dep_edit_df = dep_f[['id','date','compte','fournisseur','montant_du','commentaire']].copy()
+            dep_edit_df['compte'] = dep_edit_df['compte'].astype(str).fillna('')
+            dep_edit_df['fournisseur'] = dep_edit_df['fournisseur'].astype(str).fillna('')
+            dep_edit_df['commentaire'] = dep_edit_df['commentaire'].astype(str).fillna('')
+            dep_edit_df['montant_du'] = pd.to_numeric(dep_edit_df['montant_du'], errors='coerce').fillna(0.0)
             edited_dep = st.data_editor(
-                dep_f[['id','date','compte','fournisseur','montant_du','commentaire']],
+                dep_edit_df,
                 use_container_width=True, hide_index=True, disabled=['id'],
                 column_config={
                     "date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
                     "compte": st.column_config.TextColumn("Compte"),
                     "fournisseur": st.column_config.TextColumn("Fournisseur"),
                     "montant_du": st.column_config.NumberColumn("Montant (€)", format="%.2f"),
+                    "commentaire": st.column_config.TextColumn("Commentaire"),
                 }, key="dep_editor"
             )
             col1, col2 = st.columns(2)
