@@ -609,14 +609,17 @@ elif menu == "🔄 Répartition":
             if bud_an.empty:
                 st.warning(f"⚠️ Aucun budget pour {annee_appel}.")
             else:
-                # Calcul automatique des montants par type depuis le budget
-                total_bud = bud_an['montant_budget'].sum()
+                # Budget TOTAL voté en AG — sert de base pour le calcul Alur
+                total_bud = float(bud_an['montant_budget'].sum())
 
                 # Montants par type basé sur les classes du budget
                 montants_auto = {}
                 for key, cfg in CHARGES_CONFIG.items():
-                    classes = cfg['classes']
-                    montants_auto[key] = float(bud_an[bud_an['classe'].isin(classes)]['montant_budget'].sum())
+                    montants_auto[key] = float(bud_an[bud_an['classe'].isin(cfg['classes'])]['montant_budget'].sum())
+                # Classes non mappées → ajoutées aux charges générales
+                total_mappe = sum(montants_auto.values())
+                if total_bud - total_mappe > 0.01:
+                    montants_auto['general'] = montants_auto.get('general', 0) + (total_bud - total_mappe)
 
                 st.divider()
                 st.subheader(f"⚙️ Montants annuels par type de charge — Budget {annee_appel}")
@@ -1175,9 +1178,4 @@ elif menu == "📋 Plan Comptable":
                 fam_cnt = filt['famille'].value_counts().reset_index()
                 fam_cnt.columns = ['Famille','Nb comptes']
                 fig = px.pie(fam_cnt, values='Nb comptes', names='Famille', title='Comptes par famille')
-                st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("⚠️ Aucune donnée dans le plan comptable.")
-
-st.divider()
-st.markdown("<div style='text-align: center; color: #666;'>🏢 Gestion de Copropriété — v2.0</div>", unsafe_allow_html=True)
+                s
