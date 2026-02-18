@@ -703,111 +703,241 @@ elif menu == "🔄 Répartition":
                         fig = px.pie(type_data, values='Montant', names='Type', title="Répartition par type de charge")
                         st.plotly_chart(fig, use_container_width=True)
 
-    # ==================== ONGLET 2 : RÉGULARISATION ====================
+    # ==================== ONGLET 2 : 5ÈME APPEL RÉGULARISATION ====================
     with tab2:
-        st.subheader("5ème appel — Régularisation annuelle")
-        st.info("Calcule la différence entre les **dépenses réelles** et les **provisions versées**. Solde positif = à appeler. Négatif = à rembourser.")
+        st.subheader("5ème appel — Régularisation sur dépenses réelles")
+        st.info("""
+        **Principe :** Les 4 appels provisionnels sont basés sur le budget prévisionnel.  
+        Le 5ème appel régularise la différence entre les **dépenses réelles** et les **provisions versées**.  
+        → Solde **positif** = complément à appeler | Solde **négatif** = remboursement aux copropriétaires
+        """)
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             annee_reg = st.selectbox("📅 Année à régulariser", annees_bud, key="reg_annee")
         with col2:
-            nb_appels_reg = st.selectbox("Nb appels provisionnels versés", [4,3,2,1], key="nb_reg")
+            nb_appels_reg = st.selectbox("Nb appels provisionnels versés", [4,3,2,1], key="nb_reg",
+                help="Nombre d'appels provisionnels déjà appelés dans l'année")
+        with col3:
+            source_prov = st.radio("Base des provisions", ["Budget prévisionnel", "Saisie manuelle"], key="src_prov",
+                help="Budget = les provisions sont calculées depuis le budget. Manuelle = vous saisissez les montants exacts appelés.")
 
         if depenses_df.empty:
             st.warning("⚠️ Aucune dépense disponible.")
         else:
-            depenses_df['date'] = pd.to_datetime(depenses_df['date'])
-            depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
-            dep_reg = depenses_df[depenses_df['date'].dt.year == annee_reg].copy()
-            total_dep_reel = dep_reg['montant_du'].sum()
+            # Préparer les dépenses réelles de l'année
+            depenses_df_reg = depenses_df.copy()
+            depenses_df_reg['date'] = pd.to_datetime(depenses_df_reg['date'])
+            depenses_df_reg['montant_du'] = pd.to_numeric(depenses_df_reg['montant_du'], errors='coerce')
+            dep_reg = depenses_df_reg[depenses_df_reg['date'].dt.year == annee_reg].copy()
 
-            # Dépenses réelles par type de charge (via mapping classe)
-            dep_par_type_auto = {}
+            # Dépenses réelles par type (automatique via mapping classe)
+            reel_auto = {}
             for key, cfg in CHARGES_CONFIG.items():
                 if 'classe' in dep_reg.columns:
-                    dep_par_type_auto[key] = float(dep_reg[dep_reg['classe'].isin(cfg['classes'])]['montant_du'].sum())
+                    reel_auto[key] = float(dep_reg[dep_reg['classe'].isin(cfg['classes'])]['montant_du'].sum())
                 else:
-                    dep_par_type_auto[key] = 0
+                    reel_auto[key] = 0
+            total_reel_auto = sum(reel_auto.values())
+
+            # Budget de l'année pour les provisions auto
+            bud_reg = budget_df[budget_df['annee'] == annee_reg] if not budget_df.empty else pd.DataFrame()
+            prov_auto = {}
+            for key, cfg in CHARGES_CONFIG.items():
+                if not bud_reg.empty:
+                    prov_auto[key] = float(bud_reg[bud_reg['classe'].isin(cfg['classes'])]['montant_budget'].sum())
+                else:
+                    prov_auto[key] = 0
 
             st.divider()
-            st.subheader("💰 Provisions versées vs Dépenses réelles")
-            st.caption("Entrez les provisions appelées sur l'année. Les dépenses réelles sont calculées automatiquement depuis vos dépenses.")
 
-            col1, col2, col3 = st.columns(3)
-            provisions = {}
-            reels_saisis = {}
-            items = list(CHARGES_CONFIG.items())
-            for i, (key, cfg) in enumerate(items):
-                col = [col1, col2, col3][i % 3]
-                with col:
-                    provisions[key] = st.number_input(
-                        f"{cfg['emoji']} Provisions {cfg['label']} (€)",
-                        min_value=0.0, step=100.0, key=f"prov_{key}"
-                    )
-                    reels_saisis[key] = st.number_input(
-                        f"Dépenses réelles (€)",
-                        min_value=0.0,
-                        value=round(dep_par_type_auto.get(key, 0.0), 2),
-                        step=100.0, key=f"reel_{key}"
-                    )
+            # ---- TABLEAU RÉCAP AUTOMATIQUE ----
+            st.subheader(f"📊 Dépenses réelles {annee_reg} par type de charge")
+            recap_data = []
+            for key, cfg in CHARGES_CONFIG.items():
+                recap_data.append({
+                    'Type': f"{cfg['emoji']} {cfg['label']}",
+                    'Classes': ', '.join(cfg['classes']),
+                    'Budget prévisionnel (€)': round(prov_auto.get(key, 0), 2),
+                    'Dépenses réelles (€)': round(reel_auto.get(key, 0), 2),
+                    'Écart (€)': round(reel_auto.get(key, 0) - prov_auto.get(key, 0), 2),
+                })
+            recap_data.append({
+                'Type': '**TOTAL**', 'Classes': '',
+                'Budget prévisionnel (€)': sum(r['Budget prévisionnel (€)'] for r in recap_data),
+                'Dépenses réelles (€)': sum(r['Dépenses réelles (€)'] for r in recap_data),
+                'Écart (€)': sum(r['Écart (€)'] for r in recap_data),
+            })
+            recap_df = pd.DataFrame(recap_data)
+            st.dataframe(recap_df, use_container_width=True, hide_index=True,
+                column_config={
+                    'Budget prévisionnel (€)': st.column_config.NumberColumn(format="%,.2f"),
+                    'Dépenses réelles (€)': st.column_config.NumberColumn(format="%,.2f"),
+                    'Écart (€)': st.column_config.NumberColumn(format="%+,.2f"),
+                })
+
+            st.divider()
+
+            # ---- SAISIE DES PROVISIONS ----
+            st.subheader("💰 Montants des provisions versées")
+
+            if source_prov == "Budget prévisionnel":
+                st.caption(f"✅ Provisions calculées depuis le budget {annee_reg} × {nb_appels_reg}/{nb_appels_reg} appels versés.")
+                provisions = {k: v for k, v in prov_auto.items()}
+                # Affichage en lecture seule
+                prov_display = pd.DataFrame([
+                    {'Type': f"{CHARGES_CONFIG[k]['emoji']} {CHARGES_CONFIG[k]['label']}",
+                     'Provisions versées (€)': round(v, 2)}
+                    for k, v in provisions.items()
+                ])
+                prov_display.loc[len(prov_display)] = {'Type': '**TOTAL**', 'Provisions versées (€)': sum(provisions.values())}
+                st.dataframe(prov_display, use_container_width=True, hide_index=True,
+                    column_config={"Provisions versées (€)": st.column_config.NumberColumn(format="%,.2f")})
+            else:
+                st.caption("Saisissez les montants **exacts** appelés pour chaque type de charge sur l'année.")
+                col1, col2, col3 = st.columns(3)
+                provisions = {}
+                for i, (key, cfg) in enumerate(CHARGES_CONFIG.items()):
+                    with [col1, col2, col3][i % 3]:
+                        provisions[key] = st.number_input(
+                            f"{cfg['emoji']} {cfg['label']} (€)",
+                            min_value=0.0,
+                            value=round(prov_auto.get(key, 0.0), 2),
+                            step=100.0, key=f"prov_man_{key}"
+                        )
 
             total_prov = sum(provisions.values())
-            total_reel = sum(reels_saisis.values())
-            solde_global = total_reel - total_prov
 
             st.divider()
+
+            # ---- MÉTRIQUES GLOBALES ----
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Dépenses réelles totales", f"{total_dep_reel:,.2f} €")
-            c2.metric("Provisions totales versées", f"{total_prov:,.2f} €")
-            c3.metric("Dépenses réelles saisies", f"{total_reel:,.2f} €")
-            c4.metric("Solde à régulariser", f"{solde_global:+,.2f} €",
+            solde_global = total_reel_auto - total_prov
+            c1.metric("Dépenses réelles", f"{total_reel_auto:,.2f} €")
+            c2.metric("Provisions versées", f"{total_prov:,.2f} €")
+            c3.metric("Solde global", f"{solde_global:+,.2f} €",
                 delta_color="inverse" if solde_global > 0 else "normal")
+            c4.metric("Nb lignes de dépenses", len(dep_reg))
 
             if total_prov == 0:
-                st.info("💡 Entrez les provisions versées pour calculer la régularisation.")
+                st.info("💡 Configurez les provisions pour calculer la régularisation.")
             else:
                 st.divider()
-                st.subheader(f"📋 5ème appel de régularisation {annee_reg}")
+                st.subheader(f"📋 5ème appel de régularisation — {annee_reg}")
 
+                # ---- CALCUL PAR COPROPRIÉTAIRE ----
                 reg_list = []
                 for _, cop in copro_df.iterrows():
                     prov_cop = 0
                     reel_cop = 0
+                    detail_prov = {}
+                    detail_reel = {}
+
                     for key, cfg in CHARGES_CONFIG.items():
                         tant = float(cop.get(cfg['col'], 0) or 0)
                         if cfg['total'] > 0 and tant > 0:
-                            prov_cop += (tant / cfg['total']) * provisions[key]
-                            reel_cop += (tant / cfg['total']) * reels_saisis[key]
+                            part_prov = (tant / cfg['total']) * provisions[key]
+                            part_reel = (tant / cfg['total']) * reel_auto[key]
+                        else:
+                            part_prov = 0
+                            part_reel = 0
+                        prov_cop += part_prov
+                        reel_cop += part_reel
+                        detail_prov[key] = round(part_prov, 2)
+                        detail_reel[key] = round(part_reel, 2)
+
                     reg = reel_cop - prov_cop
-                    reg_list.append({
-                        'Lot': cop.get('lot',''), 'Copropriétaire': cop.get('nom',''),
-                        'Étage': cop.get('etage',''), 'Usage': cop.get('usage',''),
+
+                    row = {
+                        'Lot': cop.get('lot', ''),
+                        'Copropriétaire': cop.get('nom', ''),
+                        'Étage': cop.get('etage', ''),
+                        'Usage': cop.get('usage', ''),
                         'Provisions versées (€)': round(prov_cop, 2),
                         'Dépenses réelles (€)': round(reel_cop, 2),
-                        'Régularisation (€)': round(reg, 2),
-                        'Sens': '💳 À payer' if reg > 0.01 else ('💚 À rembourser' if reg < -0.01 else '✅ Équilibré')
-                    })
+                        '5ème appel (€)': round(reg, 2),
+                        'Sens': '💳 À payer' if reg > 0.01 else ('💚 À rembourser' if reg < -0.01 else '✅ Soldé'),
+                    }
+                    reg_list.append(row)
 
-                reg_df = pd.DataFrame(reg_list)
-                st.dataframe(reg_df, use_container_width=True, hide_index=True,
+                reg_df = pd.DataFrame(reg_list).sort_values('Lot')
+
+                # Options d'affichage
+                col1, col2 = st.columns(2)
+                with col1:
+                    show_zeros = st.checkbox("Afficher les lots soldés", value=True, key="show_zeros_reg")
+                with col2:
+                    filtre_sens = st.selectbox("Filtrer par sens", ["Tous","💳 À payer","💚 À rembourser","✅ Soldé"], key="filtre_sens")
+
+                reg_display = reg_df.copy()
+                if not show_zeros:
+                    reg_display = reg_display[reg_display['5ème appel (€)'].abs() > 0.01]
+                if filtre_sens != "Tous":
+                    reg_display = reg_display[reg_display['Sens'] == filtre_sens]
+
+                st.dataframe(reg_display, use_container_width=True, hide_index=True,
                     column_config={
                         'Provisions versées (€)': st.column_config.NumberColumn(format="%.2f"),
                         'Dépenses réelles (€)': st.column_config.NumberColumn(format="%.2f"),
-                        'Régularisation (€)': st.column_config.NumberColumn(format="%.2f"),
+                        '5ème appel (€)': st.column_config.NumberColumn("🎯 5ème appel (€)", format="%+.2f"),
                     })
 
                 st.divider()
-                c1, c2, c3, c4 = st.columns(4)
-                a_payer = reg_df[reg_df['Régularisation (€)'] > 0.01]['Régularisation (€)'].sum()
-                a_rembourser = abs(reg_df[reg_df['Régularisation (€)'] < -0.01]['Régularisation (€)'].sum())
-                c1.metric("Total provisions", f"{reg_df['Provisions versées (€)'].sum():,.2f} €")
-                c2.metric("Total réel", f"{reg_df['Dépenses réelles (€)'].sum():,.2f} €")
-                c3.metric("Montant à appeler", f"{a_payer:,.2f} €")
-                c4.metric("Montant à rembourser", f"{a_rembourser:,.2f} €")
 
-                csv_reg = reg_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
-                st.download_button(f"📥 Exporter régularisation {annee_reg}", csv_reg, f"regularisation_{annee_reg}.csv", "text/csv")
+                # ---- MÉTRIQUES FINALES ----
+                c1, c2, c3, c4 = st.columns(4)
+                a_payer_df = reg_df[reg_df['5ème appel (€)'] > 0.01]
+                a_rembourser_df = reg_df[reg_df['5ème appel (€)'] < -0.01]
+                c1.metric("Provisions versées", f"{reg_df['Provisions versées (€)'].sum():,.2f} €")
+                c2.metric("Dépenses réelles", f"{reg_df['Dépenses réelles (€)'].sum():,.2f} €")
+                c3.metric(f"💳 Montant à appeler ({len(a_payer_df)} lots)", f"{a_payer_df['5ème appel (€)'].sum():,.2f} €")
+                c4.metric(f"💚 À rembourser ({len(a_rembourser_df)} lots)", f"{abs(a_rembourser_df['5ème appel (€)'].sum()):,.2f} €")
+
+                # ---- GRAPHIQUE ----
+                st.divider()
+                col1, col2 = st.columns(2)
+                with col1:
+                    fig = px.bar(
+                        reg_df.sort_values('5ème appel (€)', ascending=False),
+                        x='Copropriétaire', y='5ème appel (€)',
+                        color='Sens', title=f"5ème appel par copropriétaire — {annee_reg}",
+                        color_discrete_map={'💳 À payer':'#e74c3c','💚 À rembourser':'#2ecc71','✅ Soldé':'#95a5a6'},
+                        text='5ème appel (€)'
+                    )
+                    fig.update_traces(texttemplate='%{text:+.0f}€', textposition='outside')
+                    fig.update_layout(xaxis_tickangle=45, height=450)
+                    st.plotly_chart(fig, use_container_width=True)
+                with col2:
+                    # Répartition provisions vs réel par type
+                    comp_types = pd.DataFrame([
+                        {'Type': f"{CHARGES_CONFIG[k]['emoji']} {CHARGES_CONFIG[k]['label']}",
+                         'Provisions (€)': round(provisions[k], 2),
+                         'Réel (€)': round(reel_auto[k], 2)}
+                        for k in CHARGES_CONFIG
+                    ])
+                    fig2 = go.Figure()
+                    fig2.add_trace(go.Bar(name='Provisions', x=comp_types['Type'], y=comp_types['Provisions (€)'], marker_color='lightblue'))
+                    fig2.add_trace(go.Bar(name='Réel', x=comp_types['Type'], y=comp_types['Réel (€)'], marker_color='salmon'))
+                    fig2.update_layout(barmode='group', title='Provisions vs Réel par type', xaxis_tickangle=20)
+                    st.plotly_chart(fig2, use_container_width=True)
+
+                # ---- EXPORT ----
+                st.divider()
+                col1, col2 = st.columns(2)
+                with col1:
+                    csv_reg = reg_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+                    st.download_button(
+                        f"📥 Exporter 5ème appel {annee_reg} (CSV)",
+                        csv_reg, f"5eme_appel_{annee_reg}.csv", "text/csv"
+                    )
+                with col2:
+                    # Export uniquement les lots à régulariser
+                    reg_actif = reg_df[reg_df['5ème appel (€)'].abs() > 0.01]
+                    csv_actif = reg_actif.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+                    st.download_button(
+                        f"📥 Exporter uniquement lots à régulariser ({len(reg_actif)})",
+                        csv_actif, f"5eme_appel_{annee_reg}_actif.csv", "text/csv"
+                    )
 
     # ==================== ONGLET 3 : VUE GLOBALE ====================
     with tab3:
