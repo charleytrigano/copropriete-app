@@ -636,47 +636,87 @@ elif menu == "🔄 Répartition":
                         )
 
                 total_configure = sum(montants.values())
+
                 st.divider()
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Total configuré", f"{total_configure:,.0f} €")
-                c2.metric("Budget prévu", f"{total_bud:,.0f} €")
+
+                # ---- LOI ALUR ----
+                st.subheader("🏛️ Loi Alur — Fonds de travaux")
+                st.caption("Cotisation obligatoire = 5% minimum du budget prévisionnel, répartie sur les tantièmes généraux.")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    alur_taux = st.number_input("Taux Alur (%)", min_value=5.0, max_value=20.0,
+                        value=5.0, step=0.5, key="alur_taux",
+                        help="Minimum légal = 5% du budget prévisionnel (loi Alur art. 14-2)")
+                with col2:
+                    alur_annuel = round(total_configure * alur_taux / 100, 2)
+                    st.metric("Fonds de travaux annuel", f"{alur_annuel:,.2f} €",
+                        help=f"{alur_taux}% × {total_configure:,.0f} € de budget")
+                with col3:
+                    alur_par_appel = round(alur_annuel / nb_appels, 2)
+                    st.metric(f"Alur par appel ({label_trim})", f"{alur_par_appel:,.2f} €")
+
+                st.divider()
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Budget charges", f"{total_configure:,.0f} €")
+                c2.metric("Fonds de travaux (Alur)", f"{alur_annuel:,.2f} €")
+                total_avec_alur = total_configure + alur_annuel
+                c3.metric("Total appel annuel", f"{total_avec_alur:,.2f} €")
                 ecart_cfg = total_configure - total_bud
-                c3.metric("Écart", f"{ecart_cfg:+,.0f} €", delta_color="normal" if abs(ecart_cfg) < 100 else "inverse")
+                c4.metric("Écart vs budget", f"{ecart_cfg:+,.0f} €",
+                    delta_color="normal" if abs(ecart_cfg) < 100 else "inverse")
 
                 if abs(ecart_cfg) > 500:
                     st.warning(f"⚠️ Différence de {abs(ecart_cfg):,.0f} € entre le total configuré et le budget.")
 
                 st.divider()
-                st.subheader(f"📋 Appel {label_trim} {annee_appel} — {100//nb_appels}% du budget annuel")
+                st.subheader(f"📋 Appel {label_trim} {annee_appel} — {100//nb_appels}% du budget annuel + Alur")
 
-                # Calcul
+                # Calcul charges + Alur
                 appels_df = calculer_appels(copro_df, montants)
                 appels_df[f'🎯 APPEL {label_trim} (€)'] = (appels_df['💰 TOTAL Annuel (€)'] / nb_appels).round(2)
+
+                # Ajouter la cotisation Alur (répartie sur tantièmes généraux /10000)
+                appels_df['🏛️ Alur (€)'] = appels_df.apply(
+                    lambda row: round(
+                        (float(copro_df[copro_df['nom'] == row['Copropriétaire']]['tantieme_general'].values[0])
+                         / 10000 * alur_par_appel)
+                        if len(copro_df[copro_df['nom'] == row['Copropriétaire']]) > 0 else 0,
+                        2
+                    ), axis=1
+                )
+                appels_df[f'🎯 TOTAL {label_trim} avec Alur (€)'] = (
+                    appels_df[f'🎯 APPEL {label_trim} (€)'] + appels_df['🏛️ Alur (€)']
+                ).round(2)
 
                 show_detail = st.checkbox("Afficher le détail par type de charge", value=False, key="show_det")
 
                 detail_cols = [f"{CHARGES_CONFIG[k]['emoji']} {CHARGES_CONFIG[k]['label']}" for k in CHARGES_CONFIG]
                 base_cols = ['Lot','Copropriétaire','Étage','Usage']
+                alur_cols = ['🏛️ Alur (€)', f'🎯 TOTAL {label_trim} avec Alur (€)']
                 if show_detail:
-                    display_cols = base_cols + detail_cols + ['💰 TOTAL Annuel (€)', f'🎯 APPEL {label_trim} (€)']
+                    display_cols = base_cols + detail_cols + ['💰 TOTAL Annuel (€)', f'🎯 APPEL {label_trim} (€)'] + alur_cols
                 else:
-                    display_cols = base_cols + ['💰 TOTAL Annuel (€)', f'🎯 APPEL {label_trim} (€)']
+                    display_cols = base_cols + ['💰 TOTAL Annuel (€)', f'🎯 APPEL {label_trim} (€)'] + alur_cols
 
                 display_cols = [c for c in display_cols if c in appels_df.columns]
 
                 st.dataframe(appels_df[display_cols], use_container_width=True, hide_index=True,
                     column_config={
-                        f'🎯 APPEL {label_trim} (€)': st.column_config.NumberColumn(format="%.2f"),
-                        '💰 TOTAL Annuel (€)': st.column_config.NumberColumn(format="%.2f"),
+                        f'🎯 APPEL {label_trim} (€)': st.column_config.NumberColumn("Charges (€)", format="%.2f"),
+                        '🏛️ Alur (€)': st.column_config.NumberColumn("Alur (€)", format="%.2f"),
+                        f'🎯 TOTAL {label_trim} avec Alur (€)': st.column_config.NumberColumn(f"🎯 TOTAL {label_trim} (€)", format="%.2f"),
+                        '💰 TOTAL Annuel (€)': st.column_config.NumberColumn("Total Annuel (€)", format="%.2f"),
                     })
 
                 st.divider()
                 c1, c2, c3, c4 = st.columns(4)
-                total_appel = appels_df[f'🎯 APPEL {label_trim} (€)'].sum()
-                c1.metric(f"Total appel {label_trim}", f"{total_appel:,.2f} €")
-                c2.metric("Total annuel", f"{appels_df['💰 TOTAL Annuel (€)'].sum():,.2f} €")
-                c3.metric("Nb copropriétaires", len(appels_df))
-                c4.metric("Appel moyen", f"{appels_df[f'🎯 APPEL {label_trim} (€)'].mean():,.2f} €")
+                total_charges = appels_df[f'🎯 APPEL {label_trim} (€)'].sum()
+                total_alur_appel = appels_df['🏛️ Alur (€)'].sum()
+                total_avec_alur = appels_df[f'🎯 TOTAL {label_trim} avec Alur (€)'].sum()
+                c1.metric(f"Charges {label_trim}", f"{total_charges:,.2f} €")
+                c2.metric("Fonds Alur", f"{total_alur_appel:,.2f} €")
+                c3.metric(f"🎯 TOTAL {label_trim}", f"{total_avec_alur:,.2f} €")
+                c4.metric("Appel moyen / copro", f"{total_avec_alur/len(appels_df):,.2f} €")
 
                 csv_appel = appels_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
                 st.download_button(
