@@ -2,20 +2,12 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
-from supabase import create_client, Client
-import os
+from datetime import datetime
+from supabase import create_client
 import time
 
-# Configuration de la page
-st.set_page_config(
-    page_title="Gestion Copropriété",
-    page_icon="🏢",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Gestion Copropriété", page_icon="🏢", layout="wide", initial_sidebar_state="expanded")
 
-# Initialisation de Supabase
 @st.cache_resource
 def init_supabase():
     url = st.secrets["SUPABASE_URL"]
@@ -24,1666 +16,991 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# Styles CSS personnalisés
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-    }
-    .stat-box {
-        background: #f0f2f6;
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 0.5rem 0;
-    }
+    .main-header { font-size: 2.5rem; font-weight: bold; color: #1f77b4; text-align: center; margin-bottom: 2rem; }
+    .stat-box { background: #f0f2f6; padding: 1rem; border-radius: 8px; margin: 0.5rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
-# Fonctions de base de données
+# ==================== FONCTIONS DB ====================
 def get_budget():
     try:
-        response = supabase.table('budget').select('*').execute()
-        return pd.DataFrame(response.data)
+        return pd.DataFrame(supabase.table('budget').select('*').execute().data)
     except Exception as e:
-        st.error(f"❌ Erreur lors de la récupération du budget: {str(e)}")
-        return pd.DataFrame()
+        st.error(f"❌ Erreur budget: {e}"); return pd.DataFrame()
 
 def get_depenses(date_debut=None, date_fin=None):
     try:
-        query = supabase.table('depenses').select('*')
-        if date_debut:
-            query = query.gte('date', date_debut.strftime('%Y-%m-%d'))
-        if date_fin:
-            query = query.lte('date', date_fin.strftime('%Y-%m-%d'))
-        response = query.execute()
-        return pd.DataFrame(response.data)
+        q = supabase.table('depenses').select('*')
+        if date_debut: q = q.gte('date', date_debut.strftime('%Y-%m-%d'))
+        if date_fin:   q = q.lte('date', date_fin.strftime('%Y-%m-%d'))
+        df = pd.DataFrame(q.execute().data)
+        if not df.empty and 'deleted' in df.columns:
+            df = df[df['deleted'] != True]
+        return df
     except Exception as e:
-        st.error(f"❌ Erreur lors de la récupération des dépenses: {str(e)}")
-        st.info("💡 Vérifiez que la table 'depenses' existe dans Supabase et que RLS est désactivé.")
-        return pd.DataFrame()  # Retourner un DataFrame vide en cas d'erreur
+        st.error(f"❌ Erreur dépenses: {e}"); return pd.DataFrame()
 
 def get_coproprietaires():
     try:
-        response = supabase.table('coproprietaires').select('*').execute()
-        return pd.DataFrame(response.data)
+        return pd.DataFrame(supabase.table('coproprietaires').select('*').execute().data)
     except Exception as e:
-        st.error(f"❌ Erreur lors de la récupération des copropriétaires: {str(e)}")
-        return pd.DataFrame()
+        st.error(f"❌ Erreur copropriétaires: {e}"); return pd.DataFrame()
 
 def get_plan_comptable():
     try:
-        response = supabase.table('plan_comptable').select('*').execute()
-        return pd.DataFrame(response.data)
+        return pd.DataFrame(supabase.table('plan_comptable').select('*').execute().data)
     except Exception as e:
-        st.error(f"❌ Erreur lors de la récupération du plan comptable: {str(e)}")
-        return pd.DataFrame()
+        st.error(f"❌ Erreur plan comptable: {e}"); return pd.DataFrame()
 
-def add_depense(data):
-    response = supabase.table('depenses').insert(data).execute()
-    return response
+# ==================== CONFIGURATION CLÉS DE RÉPARTITION ====================
+# Basé sur votre plan comptable réel :
+# Classe 1A, 1B, 7 → Charges générales → tantième_general / 10 000
+# Classe 2          → Électricité RDC/ss-sols → tantième_rdc_ssols / 928
+# Classe 3          → Électricité sous-sols → tantième_rdc_ssols / 928
+# Classe 4          → Garages/Parkings → tantième_garages / 28
+# Classe 5          → Ascenseurs → tantième_ascenseurs / 1 000
+# Classe 6          → Monte-voitures → tantième_ssols / 20
 
-def update_budget(compte, nouveau_montant):
-    response = supabase.table('budget').update({'montant_budget': nouveau_montant}).eq('compte', compte).execute()
-    return response
+MAPPING_CLASSE_TANTIEME = {
+    '1A': 'general',
+    '1B': 'general',
+    '7':  'general',
+    '2':  'rdc_ssols',
+    '3':  'rdc_ssols',
+    '4':  'garages',
+    '5':  'ascenseurs',
+    '6':  'ssols',
+}
 
-# Menu latéral
+CHARGES_CONFIG = {
+    'general':    {'col': 'tantieme_general',    'total': 10000, 'label': 'Charges générales',        'emoji': '🏢', 'classes': ['1A','1B','7']},
+    'ascenseurs': {'col': 'tantieme_ascenseurs',  'total': 1000,  'label': 'Ascenseurs',               'emoji': '🛗', 'classes': ['5']},
+    'rdc_ssols':  {'col': 'tantieme_rdc_ssols',   'total': 928,   'label': 'RDC / Sous-sols',          'emoji': '🅿️', 'classes': ['2','3']},
+    'garages':    {'col': 'tantieme_garages',     'total': 28,    'label': 'Garages / Parkings',       'emoji': '🔑', 'classes': ['4']},
+    'ssols':      {'col': 'tantieme_ssols',       'total': 20,    'label': 'Monte-voitures',           'emoji': '🚗', 'classes': ['6']},
+}
+
+def prepare_copro(copro_df):
+    """Convertit toutes les colonnes tantièmes en numérique."""
+    for col in ['tantieme_general','tantieme_ascenseurs','tantieme_rdc_ssols','tantieme_garages','tantieme_ssols','tantieme_monte_voitures','tantieme']:
+        if col in copro_df.columns:
+            copro_df[col] = pd.to_numeric(copro_df[col], errors='coerce').fillna(0)
+    # Fallback si les colonnes spécifiques ne sont pas remplies
+    if 'tantieme_general' not in copro_df.columns or copro_df['tantieme_general'].sum() == 0:
+        if 'tantieme' in copro_df.columns:
+            copro_df['tantieme_general'] = copro_df['tantieme']
+    return copro_df
+
+def calculer_appels(copro_df, montants_par_type):
+    """Calcule la part de chaque copropriétaire selon les montants par type de charge."""
+    rows = []
+    for _, cop in copro_df.iterrows():
+        total_annuel = 0
+        detail = {}
+        for key, cfg in CHARGES_CONFIG.items():
+            col = cfg['col']
+            tant = float(cop.get(col, 0) or 0)
+            montant = montants_par_type.get(key, 0)
+            part = (tant / cfg['total'] * montant) if cfg['total'] > 0 and tant > 0 else 0
+            detail[key] = round(part, 2)
+            total_annuel += part
+        row = {
+            'Lot': cop.get('lot',''), 'Copropriétaire': cop.get('nom',''),
+            'Étage': cop.get('etage',''), 'Usage': cop.get('usage',''),
+        }
+        row.update({f"{CHARGES_CONFIG[k]['emoji']} {CHARGES_CONFIG[k]['label']}": v for k, v in detail.items()})
+        row['💰 TOTAL Annuel (€)'] = round(total_annuel, 2)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+# ==================== MENU ====================
 st.sidebar.image("https://img.icons8.com/color/96/000000/office-building.png", width=100)
 st.sidebar.title("Navigation")
-
-menu = st.sidebar.radio(
-    "Choisir une section",
-    ["📊 Tableau de Bord", "💰 Budget", "📝 Dépenses", "👥 Copropriétaires", "🔄 Répartition", "📈 Analyses", "📋 Plan Comptable"]
-)
+menu = st.sidebar.radio("Choisir une section", [
+    "📊 Tableau de Bord", "💰 Budget", "📝 Dépenses",
+    "👥 Copropriétaires", "🔄 Répartition", "📈 Analyses", "📋 Plan Comptable"
+])
 
 # ==================== TABLEAU DE BORD ====================
 if menu == "📊 Tableau de Bord":
     st.markdown("<h1 class='main-header'>📊 Tableau de Bord</h1>", unsafe_allow_html=True)
-    
-    # Chargement des données
     budget_df = get_budget()
     depenses_df = get_depenses()
-    
+
     if not budget_df.empty and not depenses_df.empty:
-        # Conversion des dates et ajout de l'année
         depenses_df['date'] = pd.to_datetime(depenses_df['date'])
         depenses_df['annee'] = depenses_df['date'].dt.year
         depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
-        
-        # FILTRES EN HAUT
+
         col1, col2, col3 = st.columns(3)
-        
         with col1:
-            # Filtre par année
-            annees_disponibles = sorted(depenses_df['annee'].unique(), reverse=True)
-            annee_filter = st.selectbox("📅 Année", annees_disponibles, key="tdb_annee")
-        
+            annee_filter = st.selectbox("📅 Année", sorted(depenses_df['annee'].unique(), reverse=True), key="tdb_annee")
         with col2:
-            # Filtre par classe
-            if 'classe' in depenses_df.columns:
-                classes_disponibles = ['Toutes'] + sorted([str(c) for c in depenses_df['classe'].dropna().unique()])
-                classe_filter = st.selectbox("🏷️ Classe", classes_disponibles, key="tdb_classe")
-            else:
-                classe_filter = 'Toutes'
-        
+            classes_dispo = ['Toutes'] + sorted([str(c) for c in depenses_df['classe'].dropna().unique()]) if 'classe' in depenses_df.columns else ['Toutes']
+            classe_filter = st.selectbox("🏷️ Classe", classes_dispo, key="tdb_classe")
         with col3:
-            # Filtre par compte
-            comptes_disponibles = ['Tous'] + sorted(depenses_df['compte'].dropna().unique().tolist())
-            compte_filter = st.selectbox("🔢 Compte", comptes_disponibles, key="tdb_compte")
-        
-        # Application des filtres sur les dépenses
-        depenses_filtered = depenses_df[depenses_df['annee'] == annee_filter].copy()
-        
-        if classe_filter != 'Toutes' and 'classe' in depenses_filtered.columns:
-            depenses_filtered = depenses_filtered[depenses_filtered['classe'] == classe_filter]
-        
+            comptes_dispo = ['Tous'] + sorted(depenses_df['compte'].dropna().unique().tolist())
+            compte_filter = st.selectbox("🔢 Compte", comptes_dispo, key="tdb_compte")
+
+        dep_f = depenses_df[depenses_df['annee'] == annee_filter].copy()
+        if classe_filter != 'Toutes' and 'classe' in dep_f.columns:
+            dep_f = dep_f[dep_f['classe'] == classe_filter]
         if compte_filter != 'Tous':
-            depenses_filtered = depenses_filtered[depenses_filtered['compte'] == compte_filter]
-        
-        # Filtrer le budget par année et les mêmes critères
-        budget_filtered = budget_df[budget_df['annee'] == annee_filter].copy()
-        
-        if classe_filter != 'Toutes' and 'classe' in budget_filtered.columns:
-            budget_filtered = budget_filtered[budget_filtered['classe'] == classe_filter]
-        
+            dep_f = dep_f[dep_f['compte'] == compte_filter]
+
+        bud_f = budget_df[budget_df['annee'] == annee_filter].copy()
+        if classe_filter != 'Toutes' and 'classe' in bud_f.columns:
+            bud_f = bud_f[bud_f['classe'] == classe_filter]
         if compte_filter != 'Tous':
-            budget_filtered = budget_filtered[budget_filtered['compte'] == compte_filter]
-        
-        # Calculs avec données filtrées
-        total_budget = budget_filtered['montant_budget'].sum()
-        total_depenses = depenses_filtered['montant_du'].sum()
-        ecart = total_budget - total_depenses
-        pourcentage = (total_depenses / total_budget * 100) if total_budget > 0 else 0
-        
-        # Métriques principales
+            bud_f = bud_f[bud_f['compte'] == compte_filter]
+
+        total_budget = bud_f['montant_budget'].sum()
+        total_dep = dep_f['montant_du'].sum()
+        ecart = total_budget - total_dep
+        pct = (total_dep / total_budget * 100) if total_budget > 0 else 0
+
         st.divider()
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Budget Total", f"{total_budget:,.0f} €", delta=None)
-        with col2:
-            st.metric("Dépenses", f"{total_depenses:,.2f} €", delta=f"{pourcentage:.1f}%")
-        with col3:
-            delta_color = "normal" if ecart >= 0 else "inverse"
-            st.metric("Écart", f"{ecart:,.2f} €", delta=f"{ecart:,.0f} €", delta_color=delta_color)
-        with col4:
-            st.metric("Nb Dépenses", len(depenses_filtered))
-        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Budget Total", f"{total_budget:,.0f} €")
+        c2.metric("Dépenses réelles", f"{total_dep:,.2f} €", delta=f"{pct:.1f}% du budget")
+        c3.metric("Écart budgétaire", f"{ecart:,.2f} €", delta_color="normal" if ecart >= 0 else "inverse")
+        c4.metric("Nb Dépenses", len(dep_f))
         st.divider()
-        
-        # Graphiques avec données filtrées
+
         col1, col2 = st.columns(2)
-        
         with col1:
-            st.subheader("Budget vs Dépenses par Famille")
-            # Agrégation par famille sur données filtrées
-            if 'famille' in budget_filtered.columns and 'famille' in depenses_filtered.columns:
-                budget_famille = budget_filtered.groupby('famille')['montant_budget'].sum().reset_index()
-                depenses_famille = depenses_filtered.groupby('famille')['montant_du'].sum().reset_index()
-                
-                comparaison = budget_famille.merge(depenses_famille, on='famille', how='left').fillna(0)
-                comparaison.columns = ['Famille', 'Budget', 'Dépenses']
-                
+            st.subheader("Budget vs Dépenses par Classe")
+            if 'classe' in bud_f.columns and 'classe' in dep_f.columns:
+                bud_cl = bud_f.groupby('classe')['montant_budget'].sum().reset_index()
+                dep_cl = dep_f.groupby('classe')['montant_du'].sum().reset_index()
+                comp = bud_cl.merge(dep_cl, on='classe', how='left').fillna(0)
+                comp.columns = ['Classe','Budget','Dépenses']
                 fig = go.Figure()
-                fig.add_trace(go.Bar(name='Budget', x=comparaison['Famille'], y=comparaison['Budget'], marker_color='lightblue'))
-                fig.add_trace(go.Bar(name='Dépenses', x=comparaison['Famille'], y=comparaison['Dépenses'], marker_color='salmon'))
+                fig.add_trace(go.Bar(name='Budget', x=comp['Classe'], y=comp['Budget'], marker_color='lightblue'))
+                fig.add_trace(go.Bar(name='Dépenses', x=comp['Classe'], y=comp['Dépenses'], marker_color='salmon'))
                 fig.update_layout(barmode='group', height=400)
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Données de famille non disponibles")
-        
         with col2:
             st.subheader("Répartition du Budget")
-            if 'famille' in budget_filtered.columns and not budget_filtered.empty:
-                budget_famille = budget_filtered.groupby('famille')['montant_budget'].sum().reset_index()
-                fig = px.pie(budget_famille, values='montant_budget', names='famille', 
-                             title=f'Distribution du budget {annee_filter}')
+            if 'classe' in bud_f.columns and not bud_f.empty:
+                bud_cl = bud_f.groupby('classe')['montant_budget'].sum().reset_index()
+                fig = px.pie(bud_cl, values='montant_budget', names='classe', title=f'Distribution budget {annee_filter}')
                 fig.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Aucune donnée budgétaire disponible")
-        
-        # Évolution mensuelle (données filtrées)
-        st.subheader(f"Évolution des Dépenses Mensuelles - {annee_filter}")
-        if not depenses_filtered.empty:
-            depenses_filtered['mois'] = depenses_filtered['date'].dt.to_period('M').astype(str)
-            evolution = depenses_filtered.groupby('mois')['montant_du'].sum().reset_index()
-            
-            fig = px.line(evolution, x='mois', y='montant_du', markers=True,
-                          labels={'montant_du': 'Montant (€)', 'mois': 'Mois'})
+
+        st.subheader(f"Évolution Mensuelle - {annee_filter}")
+        if not dep_f.empty:
+            dep_f['mois'] = dep_f['date'].dt.to_period('M').astype(str)
+            ev = dep_f.groupby('mois')['montant_du'].sum().reset_index()
+            fig = px.line(ev, x='mois', y='montant_du', markers=True, labels={'montant_du':'Montant (€)','mois':'Mois'})
             fig.update_traces(line_color='#1f77b4', line_width=3)
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Aucune dépense pour cette période/filtre")
-        
-        # Top dépenses (données filtrées)
-        st.subheader(f"Top 10 des Dépenses - {annee_filter}")
-        if not depenses_filtered.empty:
-            top_depenses = depenses_filtered.nlargest(10, 'montant_du')[['date', 'fournisseur', 'montant_du', 'commentaire']].copy()
-            top_depenses['date'] = top_depenses['date'].dt.strftime('%d/%m/%Y')
-            st.dataframe(top_depenses, use_container_width=True, hide_index=True)
-        else:
-            st.info("Aucune dépense à afficher")
+
+        st.subheader(f"Top 10 Dépenses - {annee_filter}")
+        if not dep_f.empty:
+            top = dep_f.nlargest(10, 'montant_du')[['date','fournisseur','montant_du','commentaire']].copy()
+            top['date'] = top['date'].dt.strftime('%d/%m/%Y')
+            st.dataframe(top, use_container_width=True, hide_index=True,
+                column_config={"montant_du": st.column_config.NumberColumn("Montant (€)", format="%,.2f")})
     else:
-        if budget_df.empty:
-            st.warning("⚠️ Aucune donnée budgétaire disponible")
-        if depenses_df.empty:
-            st.info("ℹ️ Aucune dépense enregistrée")
+        st.warning("⚠️ Données insuffisantes")
 
 # ==================== BUDGET ====================
 elif menu == "💰 Budget":
     st.markdown("<h1 class='main-header'>💰 Gestion du Budget</h1>", unsafe_allow_html=True)
-    
     budget_df = get_budget()
-    
+
     if not budget_df.empty:
-        # Filtres en haut
         col1, col2, col3 = st.columns(3)
-        
         with col1:
-            # Filtre par année
-            annees_disponibles = sorted(budget_df['annee'].unique(), reverse=True)
-            annee_filter = st.selectbox("📅 Année", annees_disponibles, key="budget_annee")
-        
+            annees = sorted(budget_df['annee'].unique(), reverse=True)
+            annee_filter = st.selectbox("📅 Année", annees, key="budget_annee")
         with col2:
-            # Filtre par classe
             classe_filter = st.multiselect("🏷️ Classe", options=sorted(budget_df['classe'].unique()))
-        
         with col3:
-            # Filtre par famille
             famille_filter = st.multiselect("📂 Famille", options=sorted(budget_df['famille'].unique()))
-        
-        # Application des filtres
-        filtered_budget = budget_df[budget_df['annee'] == annee_filter].copy()
-        
-        if classe_filter:
-            filtered_budget = filtered_budget[filtered_budget['classe'].isin(classe_filter)]
-        if famille_filter:
-            filtered_budget = filtered_budget[filtered_budget['famille'].isin(famille_filter)]
-        
-        # Statistiques FILTRÉES
+
+        filt = budget_df[budget_df['annee'] == annee_filter].copy()
+        if classe_filter: filt = filt[filt['classe'].isin(classe_filter)]
+        if famille_filter: filt = filt[filt['famille'].isin(famille_filter)]
+
         st.divider()
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Nombre de postes", len(filtered_budget))
-        with col2:
-            st.metric("Budget total", f"{filtered_budget['montant_budget'].sum():,.0f} €")
-        with col3:
-            st.metric("Budget moyen", f"{filtered_budget['montant_budget'].mean():,.0f} €" if len(filtered_budget) > 0 else "0 €")
-        with col4:
-            # Comparer avec année précédente
-            annee_precedente = annee_filter - 1
-            budget_precedent = budget_df[budget_df['annee'] == annee_precedente]['montant_budget'].sum()
-            budget_actuel = filtered_budget['montant_budget'].sum()
-            if budget_precedent > 0:
-                variation = ((budget_actuel - budget_precedent) / budget_precedent * 100)
-                st.metric("vs année N-1", f"{variation:+.1f}%", delta=f"{budget_actuel - budget_precedent:,.0f} €")
-            else:
-                st.metric("vs année N-1", "N/A")
-        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Postes", len(filt))
+        c2.metric("Budget total", f"{filt['montant_budget'].sum():,.0f} €")
+        c3.metric("Moyenne / poste", f"{filt['montant_budget'].mean():,.0f} €" if len(filt) > 0 else "0 €")
+        bud_prec = budget_df[budget_df['annee'] == annee_filter - 1]['montant_budget'].sum()
+        bud_act = filt['montant_budget'].sum()
+        if bud_prec > 0:
+            c4.metric("vs N-1", f"{(bud_act-bud_prec)/bud_prec*100:+.1f}%", delta=f"{bud_act-bud_prec:,.0f} €")
+        else:
+            c4.metric("vs N-1", "N/A")
         st.divider()
-        
-        # Onglets
-        tab1, tab2, tab3 = st.tabs(["📋 Consulter", "✏️ Modifier", "➕ Créer Budget Année"])
-        
-        # =============== ONGLET 1 : CONSULTER ===============
+
+        tab1, tab2, tab3 = st.tabs(["📋 Consulter", "✏️ Modifier / Ajouter / Supprimer", "➕ Créer Budget Année"])
+
         with tab1:
-            st.subheader(f"Budget {annee_filter} ({len(filtered_budget)} postes)")
-            
-            # Affichage en lecture seule
-            st.dataframe(
-                filtered_budget[['compte', 'libelle_compte', 'montant_budget', 'classe', 'famille']],
-                use_container_width=True,
-                hide_index=True,
+            st.subheader(f"Budget {annee_filter} — {len(filt)} postes — Total : {filt['montant_budget'].sum():,.0f} €")
+            st.dataframe(filt[['compte','libelle_compte','montant_budget','classe','famille']].sort_values('compte'),
+                use_container_width=True, hide_index=True,
                 column_config={
-                    "compte": st.column_config.NumberColumn("Compte", format="%d"),
-                    "libelle_compte": st.column_config.TextColumn("Libellé"),
+                    "compte": st.column_config.TextColumn("Compte"),
                     "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%,.0f"),
-                    "classe": st.column_config.TextColumn("Classe"),
-                    "famille": st.column_config.NumberColumn("Famille", format="%d")
-                }
-            )
-            
-            # Graphiques
-            st.divider()
+                })
             col1, col2 = st.columns(2)
-            
             with col1:
-                st.subheader("Par Famille")
-                budget_famille = filtered_budget.groupby('famille')['montant_budget'].sum().reset_index()
-                budget_famille.columns = ['Famille', 'Budget']
-                fig = px.bar(budget_famille, x='Famille', y='Budget', text='Budget')
-                fig.update_traces(texttemplate='%{text:,.0f}€', textposition='outside')
+                bud_cl = filt.groupby('classe')['montant_budget'].sum().reset_index()
+                fig = px.bar(bud_cl, x='classe', y='montant_budget', title="Par Classe",
+                    labels={'montant_budget':'Budget (€)','classe':'Classe'}, color='classe')
+                fig.update_traces(texttemplate='%{y:,.0f}€', textposition='outside')
                 st.plotly_chart(fig, use_container_width=True)
-            
             with col2:
-                st.subheader("Par Classe")
-                budget_classe = filtered_budget.groupby('classe')['montant_budget'].sum().reset_index()
-                budget_classe.columns = ['Classe', 'Budget']
-                fig = px.pie(budget_classe, values='Budget', names='Classe')
+                fig = px.pie(bud_cl, values='montant_budget', names='classe', title="Répartition par Classe")
                 fig.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig, use_container_width=True)
-            
-            # Export
-            st.divider()
-            csv = filtered_budget.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Exporter en CSV",
-                data=csv,
-                file_name=f"budget_{annee_filter}.csv",
-                mime="text/csv"
-            )
-        
-        # =============== ONGLET 2 : MODIFIER ===============
+            st.download_button("📥 Exporter CSV", filt.to_csv(index=False).encode('utf-8'), f"budget_{annee_filter}.csv", "text/csv")
+
         with tab2:
-            st.subheader(f"Gérer le budget {annee_filter}")
-            
-            # Sous-onglets pour organiser les actions
             subtab1, subtab2, subtab3 = st.tabs(["✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer"])
-            
-            # ========== SOUS-ONGLET 1 : MODIFIER ==========
             with subtab1:
-                st.info("💡 Modifiez les lignes directement dans le tableau. Toutes les colonnes sont éditables.")
-                
-                # Tableau éditable avec TOUTES les colonnes modifiables
-                edited_budget = st.data_editor(
-                    filtered_budget[['id', 'compte', 'libelle_compte', 'montant_budget', 'classe', 'famille']],
-                    use_container_width=True,
-                    hide_index=True,
-                    disabled=['id'],  # Seul l'ID est non-éditable
+                edited = st.data_editor(
+                    filt[['id','compte','libelle_compte','montant_budget','classe','famille']],
+                    use_container_width=True, hide_index=True, disabled=['id'],
                     column_config={
-                        "id": st.column_config.NumberColumn("ID", disabled=True),
-                        "compte": st.column_config.NumberColumn("Compte", format="%d", min_value=0),
-                        "libelle_compte": st.column_config.TextColumn("Libellé", max_chars=200),
+                        "compte": st.column_config.TextColumn("Compte"),
+                        "libelle_compte": st.column_config.TextColumn("Libellé"),
                         "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%.0f", min_value=0),
-                        "classe": st.column_config.TextColumn("Classe"),
-                        "famille": st.column_config.NumberColumn("Famille", format="%d", min_value=0)
-                    },
-                    key="budget_editor_modify"
+                        "classe": st.column_config.SelectboxColumn("Classe", options=['1A','1B','2','3','4','5','6','7']),
+                    }, key="budget_editor"
                 )
-                
-                # Boutons d'action
-                col1, col2, col3 = st.columns([1, 1, 2])
-                
-                with col1:
-                    if st.button("💾 Enregistrer les modifications", type="primary", key="save_modifications"):
-                        try:
-                            modifications = 0
-                            for idx, row in edited_budget.iterrows():
-                                # Trouver la ligne originale
-                                original_row = filtered_budget[filtered_budget['id'] == row['id']]
-                                if not original_row.empty:
-                                    original = original_row.iloc[0]
-                                    
-                                    # Vérifier s'il y a des changements
-                                    changed = False
-                                    updates = {}
-                                    
-                                    if int(row['compte']) != int(original['compte']):
-                                        updates['compte'] = int(row['compte'])
-                                        changed = True
-                                    
-                                    if str(row['libelle_compte']) != str(original['libelle_compte']):
-                                        updates['libelle_compte'] = str(row['libelle_compte'])
-                                        changed = True
-                                    
-                                    if float(row['montant_budget']) != float(original['montant_budget']):
-                                        updates['montant_budget'] = int(row['montant_budget'])
-                                        changed = True
-                                    
-                                    if str(row['classe']) != str(original['classe']):
-                                        updates['classe'] = str(row['classe'])
-                                        changed = True
-                                    
-                                    if int(row['famille']) != int(original['famille']):
-                                        updates['famille'] = int(row['famille'])
-                                        changed = True
-                                    
-                                    # Si changement, mettre à jour
-                                    if changed:
-                                        supabase.table('budget').update(updates).eq('id', int(row['id'])).execute()
-                                        modifications += 1
-                            
-                            if modifications > 0:
-                                st.success(f"✅ {modifications} ligne(s) mise(s) à jour avec succès!")
-                                st.rerun()
-                            else:
-                                st.info("ℹ️ Aucune modification détectée")
-                        except Exception as e:
-                            st.error(f"❌ Erreur lors de la sauvegarde: {str(e)}")
-                
-                with col2:
-                    if st.button("🔄 Annuler", key="cancel_modifications"):
-                        st.rerun()
-            
-            # ========== SOUS-ONGLET 2 : AJOUTER ==========
+                if st.button("💾 Enregistrer", type="primary", key="save_bud"):
+                    try:
+                        mods = 0
+                        for _, row in edited.iterrows():
+                            orig = filt[filt['id'] == row['id']]
+                            if orig.empty: continue
+                            o = orig.iloc[0]; updates = {}
+                            if str(row['compte']) != str(o['compte']): updates['compte'] = str(row['compte'])
+                            if str(row['libelle_compte']) != str(o['libelle_compte']): updates['libelle_compte'] = str(row['libelle_compte'])
+                            if float(row['montant_budget']) != float(o['montant_budget']): updates['montant_budget'] = int(row['montant_budget'])
+                            if str(row['classe']) != str(o['classe']): updates['classe'] = str(row['classe'])
+                            if str(row['famille']) != str(o['famille']): updates['famille'] = str(row['famille'])
+                            if updates:
+                                supabase.table('budget').update(updates).eq('id', int(row['id'])).execute()
+                                mods += 1
+                        st.success(f"✅ {mods} ligne(s) mise(s) à jour!") if mods > 0 else st.info("Aucune modification")
+                        if mods > 0: st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+
             with subtab2:
-                st.subheader(f"Ajouter un nouveau compte au budget {annee_filter}")
-                
-                st.info("💡 Entrez le numéro de compte. Si le compte existe dans le plan comptable, les informations seront automatiquement remplies.")
-                
-                # Récupérer le plan comptable
                 plan_df = get_plan_comptable()
-                
-                # Numéro de compte (sans formulaire pour permettre l'auto-remplissage)
-                new_compte = st.number_input(
-                    "Numéro de compte *",
-                    min_value=0,
-                    step=1,
-                    format="%d",
-                    help="Entrez le numéro du compte. Les autres champs se rempliront automatiquement s'il existe dans le plan comptable.",
-                    key="new_compte_input"
-                )
-                
-                # Chercher dans le plan comptable
-                compte_info = None
-                if new_compte > 0 and not plan_df.empty:
-                    compte_info = plan_df[plan_df['compte'] == new_compte]
-                
-                # Afficher un message si trouvé
-                if compte_info is not None and not compte_info.empty:
-                    st.success(f"✅ Compte trouvé dans le plan comptable : {compte_info.iloc[0]['libelle_compte']}")
-                    auto_fill = True
-                    default_libelle = compte_info.iloc[0]['libelle_compte']
-                    default_classe = compte_info.iloc[0]['classe']
-                    default_famille = int(compte_info.iloc[0]['famille'])
-                elif new_compte > 0:
-                    st.warning(f"⚠️ Le compte {new_compte} n'existe pas dans le plan comptable. Vous devrez saisir toutes les informations manuellement.")
-                    auto_fill = False
-                    default_libelle = ""
-                    default_classe = ""
-                    default_famille = 0
+                new_compte = st.text_input("Numéro de compte *", key="new_compte_in")
+                compte_info = plan_df[plan_df['compte'].astype(str) == str(new_compte)] if new_compte and not plan_df.empty else pd.DataFrame()
+                if not compte_info.empty:
+                    st.success(f"✅ {compte_info.iloc[0]['libelle_compte']}")
+                    def_lib = compte_info.iloc[0]['libelle_compte']
+                    def_cl = compte_info.iloc[0]['classe']
+                    def_fam = str(compte_info.iloc[0]['famille'])
+                elif new_compte:
+                    st.warning("⚠️ Compte non trouvé dans le plan comptable")
+                    def_lib = ""; def_cl = "1A"; def_fam = ""
                 else:
-                    auto_fill = False
-                    default_libelle = ""
-                    default_classe = ""
-                    default_famille = 0
-                
-                st.divider()
-                
-                # Reste du formulaire
+                    def_lib = ""; def_cl = "1A"; def_fam = ""
+
                 col1, col2 = st.columns(2)
-                
                 with col1:
-                    new_libelle = st.text_input(
-                        "Libellé du compte *",
-                        value=default_libelle,
-                        max_chars=200,
-                        help="Description du compte (auto-rempli si le compte existe dans le plan comptable)",
-                        key="new_libelle_input"
-                    )
-                    
-                    new_montant = st.number_input(
-                        "Montant du budget (€) *",
-                        min_value=0,
-                        step=100,
-                        format="%d",
-                        help="Montant budgété pour ce poste",
-                        key="new_montant_input"
-                    )
-                
+                    new_lib = st.text_input("Libellé *", value=def_lib, key="new_lib_in")
+                    new_montant = st.number_input("Montant (€) *", min_value=0, step=100, key="new_montant_in")
                 with col2:
-                    # Classe
-                    if auto_fill and default_classe:
-                        new_classe = st.text_input(
-                            "Classe *",
-                            value=default_classe,
-                            help="Classe comptable (auto-rempli)",
-                            key="new_classe_input"
-                        )
+                    new_classe = st.selectbox("Classe *", ['1A','1B','2','3','4','5','6','7'],
+                        index=['1A','1B','2','3','4','5','6','7'].index(def_cl) if def_cl in ['1A','1B','2','3','4','5','6','7'] else 0,
+                        key="new_classe_in")
+                    new_famille = st.text_input("Famille *", value=def_fam, key="new_fam_in")
+
+                if st.button("✨ Ajouter", type="primary", key="add_bud"):
+                    if new_compte and new_lib and new_famille:
+                        try:
+                            supabase.table('budget').insert({
+                                'compte': new_compte, 'libelle_compte': new_lib,
+                                'montant_budget': int(new_montant), 'annee': int(annee_filter),
+                                'classe': new_classe, 'famille': new_famille
+                            }).execute()
+                            st.success("✅ Compte ajouté!"); st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ {e}")
                     else:
-                        classes_existantes = sorted(budget_df['classe'].unique())
-                        new_classe = st.selectbox(
-                            "Classe *",
-                            options=[""] + classes_existantes,
-                            help="Classe comptable",
-                            key="new_classe_select"
-                        )
-                        
-                        if new_classe == "":
-                            new_classe = st.text_input("Ou entrer une nouvelle classe *", key="new_classe_manual")
-                    
-                    # Famille
-                    if auto_fill and default_famille > 0:
-                        new_famille = st.number_input(
-                            "Famille *",
-                            value=default_famille,
-                            min_value=0,
-                            step=1,
-                            help="Famille comptable (auto-rempli)",
-                            key="new_famille_input"
-                        )
-                    else:
-                        familles_existantes = sorted(budget_df['famille'].unique())
-                        famille_choice = st.selectbox(
-                            "Famille *",
-                            options=["Choisir existante", "Nouvelle famille"],
-                            help="Famille comptable",
-                            key="famille_choice"
-                        )
-                        
-                        if famille_choice == "Choisir existante":
-                            new_famille = st.selectbox("Sélectionner", options=familles_existantes, key="famille_select")
-                        else:
-                            new_famille = st.number_input("Numéro de famille *", min_value=0, step=1, key="famille_manual")
-                
-                # Bouton d'ajout
-                st.divider()
-                
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    if st.button("✨ Ajouter le compte au budget", type="primary", use_container_width=True, key="add_compte_btn"):
-                        # Validation
-                        errors = []
-                        
-                        if new_compte <= 0:
-                            errors.append("Le numéro de compte doit être supérieur à 0")
-                        
-                        if not new_libelle or new_libelle.strip() == "":
-                            errors.append("Le libellé est obligatoire")
-                        
-                        if not new_classe or new_classe.strip() == "":
-                            errors.append("La classe est obligatoire")
-                        
-                        if new_famille <= 0:
-                            errors.append("La famille est obligatoire")
-                        
-                        if errors:
-                            for error in errors:
-                                st.error(f"❌ {error}")
-                        else:
-                            # Clé unique pour éviter les doublons
-                            insert_key = f"budget_{new_compte}_{annee_filter}_{new_montant}"
-                            
-                            if 'last_budget_insert' not in st.session_state or st.session_state.last_budget_insert != insert_key:
-                                try:
-                                    # Vérifier si le compte existe déjà pour cette année
-                                    existing = budget_df[
-                                        (budget_df['compte'] == new_compte) & 
-                                        (budget_df['annee'] == annee_filter)
-                                    ]
-                                    
-                                    if not existing.empty:
-                                        st.error(f"❌ Le compte {new_compte} existe déjà dans le budget {annee_filter}")
-                                    else:
-                                        # Insérer le nouveau compte
-                                        new_line = {
-                                            'compte': int(new_compte),
-                                            'libelle_compte': new_libelle.strip(),
-                                            'montant_budget': int(new_montant),
-                                            'annee': int(annee_filter),
-                                            'classe': new_classe.strip(),
-                                            'famille': int(new_famille)
-                                        }
-                                        
-                                        supabase.table('budget').insert(new_line).execute()
-                                        
-                                        # Marquer comme inséré
-                                        st.session_state.last_budget_insert = insert_key
-                                        
-                                        st.success(f"✅ Compte {new_compte} - {new_libelle} ajouté avec succès au budget {annee_filter}!")
-                                        st.balloons()
-                                        st.rerun()
-                                        
-                                except Exception as e:
-                                    st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
-                            else:
-                                st.info("Ce compte a déjà été ajouté. Modifiez les valeurs pour ajouter un nouveau compte.")
-                
-                with col2:
-                    if st.button("🔄 Réinitialiser", use_container_width=True, key="reset_form_btn"):
-                        # Réinitialiser le flag
-                        if 'last_budget_insert' in st.session_state:
-                            del st.session_state.last_budget_insert
-                        st.rerun()
-                
-                # Aide : Aperçu du plan comptable
-                st.divider()
-                with st.expander("📋 Consulter le plan comptable"):
-                    if not plan_df.empty:
-                        st.dataframe(
-                            plan_df[['compte', 'libelle_compte', 'classe', 'famille']],
-                            use_container_width=True,
-                            hide_index=True,
-                            column_config={
-                                "compte": st.column_config.NumberColumn("Compte", format="%d"),
-                                "libelle_compte": "Libellé",
-                                "classe": "Classe",
-                                "famille": st.column_config.NumberColumn("Famille", format="%d")
-                            }
-                        )
-                    else:
-                        st.info("Le plan comptable est vide")
-                
-                # Aide : Comptes déjà dans le budget
-                with st.expander(f"📊 Comptes déjà dans le budget {annee_filter}"):
-                    st.dataframe(
-                        filtered_budget[['compte', 'libelle_compte', 'classe', 'famille', 'montant_budget']].sort_values('compte'),
-                        use_container_width=True,
-                        hide_index=True
-                    )
-            
-            # ========== SOUS-ONGLET 3 : SUPPRIMER ==========
+                        st.error("❌ Remplissez tous les champs obligatoires")
+
             with subtab3:
-                st.subheader(f"Supprimer des comptes du budget {annee_filter}")
-                
-                st.warning("⚠️ La suppression est définitive et ne peut pas être annulée.")
-                
-                if not filtered_budget.empty:
-                    # Sélection par ID
-                    st.info("💡 Sélectionnez les comptes à supprimer.")
-                    
-                    ids_to_delete = st.multiselect(
-                        "Sélectionner les comptes à supprimer",
-                        options=filtered_budget['id'].tolist(),
-                        format_func=lambda x: f"ID {x} - {filtered_budget[filtered_budget['id']==x]['libelle_compte'].values[0]}"
-                    )
-                    
-                    if ids_to_delete:
-                        st.warning(f"🗑️ {len(ids_to_delete)} ligne(s) sélectionnée(s) pour suppression")
-                        
-                        # Afficher les lignes qui seront supprimées
-                        lines_to_delete = filtered_budget[filtered_budget['id'].isin(ids_to_delete)]
-                        st.dataframe(
-                            lines_to_delete[['compte', 'libelle_compte', 'montant_budget']],
-                            use_container_width=True,
-                            hide_index=True
-                        )
-                        
-                        col1, col2, col3 = st.columns([1, 1, 2])
-                        
-                        with col1:
-                            if st.button("🗑️ Confirmer la suppression", type="secondary", key="confirm_delete"):
-                                # Créer une clé unique pour cette suppression
-                                delete_key = f"delete_budget_{'-'.join(map(str, sorted(ids_to_delete)))}"
-                                
-                                # Vérifier si cette suppression n'a pas déjà été faite
-                                if 'last_budget_delete' not in st.session_state or st.session_state.last_budget_delete != delete_key:
-                                    try:
-                                        # Supprimer les lignes sélectionnées
-                                        for id_to_del in ids_to_delete:
-                                            supabase.table('budget').delete().eq('id', id_to_del).execute()
-                                        
-                                        # Marquer comme supprimé
-                                        st.session_state.last_budget_delete = delete_key
-                                        
-                                        st.success(f"✅ {len(ids_to_delete)} ligne(s) supprimée(s) avec succès!")
-                                        st.rerun()
-                                        
-                                    except Exception as e:
-                                        st.error(f"❌ Erreur lors de la suppression: {str(e)}")
-                                else:
-                                    st.info("Ces lignes ont déjà été supprimées. Rafraîchissez la page (F5).")
-                        
-                        with col2:
-                            if st.button("❌ Annuler", key="cancel_delete"):
-                                # Réinitialiser le flag
-                                if 'last_budget_delete' in st.session_state:
-                                    del st.session_state.last_budget_delete
-                                st.rerun()
-                    else:
-                        st.info("ℹ️ Sélectionnez au moins un compte pour activer la suppression")
-                else:
-                    st.info("ℹ️ Aucune ligne à supprimer avec les filtres actuels")
-        
-        # =============== ONGLET 3 : CRÉER NOUVEAU BUDGET ===============
+                st.warning("⚠️ La suppression est définitive.")
+                ids_del = st.multiselect("Sélectionner les postes à supprimer", options=filt['id'].tolist(),
+                    format_func=lambda x: f"{filt[filt['id']==x]['compte'].values[0]} — {filt[filt['id']==x]['libelle_compte'].values[0]}")
+                if ids_del:
+                    if st.button("🗑️ Confirmer la suppression", type="secondary"):
+                        for i in ids_del: supabase.table('budget').delete().eq('id', i).execute()
+                        st.success(f"✅ {len(ids_del)} poste(s) supprimé(s)"); st.rerun()
+
         with tab3:
             st.subheader("Créer un budget pour une nouvelle année")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                nouvelle_annee = st.number_input(
-                    "📅 Année du nouveau budget", 
-                    min_value=2020, 
-                    max_value=2050, 
-                    value=annee_filter + 1,
-                    step=1
-                )
-            
-            with col2:
-                annee_source = st.selectbox(
-                    "📋 Copier depuis l'année", 
-                    annees_disponibles,
-                    index=0
-                )
-            
-            # Vérifier si budget existe déjà
-            budget_existe = not budget_df[budget_df['annee'] == nouvelle_annee].empty
-            
-            if budget_existe:
-                st.warning(f"⚠️ Un budget pour l'année {nouvelle_annee} existe déjà ({len(budget_df[budget_df['annee'] == nouvelle_annee])} postes)")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("🗑️ Supprimer et recréer", type="secondary"):
-                        try:
-                            # Supprimer l'ancien budget
-                            supabase.table('budget').delete().eq('annee', nouvelle_annee).execute()
-                            st.success(f"✅ Budget {nouvelle_annee} supprimé")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Erreur: {str(e)}")
+            c1, c2 = st.columns(2)
+            with c1:
+                nouvelle_annee = st.number_input("📅 Nouvelle année", min_value=2020, max_value=2050, value=annee_filter+1, step=1)
+            with c2:
+                annee_src = st.selectbox("Copier depuis", annees)
+            src = budget_df[budget_df['annee'] == annee_src].copy()
+            ajust = st.radio("Ajustement", ["Aucun", "Pourcentage"])
+            if ajust == "Pourcentage":
+                coeff = st.number_input("% +/-", min_value=-50.0, max_value=100.0, value=3.0, step=0.5) / 100
+                src['nouveau_montant'] = (src['montant_budget'] * (1+coeff)).round(0).astype(int)
             else:
-                st.info(f"ℹ️ Aucun budget n'existe pour {nouvelle_annee}")
-            
-            # Option de coefficient
-            st.subheader("Ajustement du budget")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                ajustement_type = st.radio(
-                    "Type d'ajustement",
-                    ["Aucun (copie à l'identique)", "Pourcentage global", "Montant fixe"]
-                )
-            
-            with col2:
-                if ajustement_type == "Pourcentage global":
-                    coefficient = st.number_input(
-                        "Pourcentage d'augmentation/diminution",
-                        min_value=-50.0,
-                        max_value=100.0,
-                        value=3.0,
-                        step=0.5,
-                        format="%.1f"
-                    ) / 100
-                elif ajustement_type == "Montant fixe":
-                    montant_fixe = st.number_input(
-                        "Montant à ajouter/retirer (€)",
-                        value=0,
-                        step=100
-                    )
-                else:
-                    coefficient = 0
-                    montant_fixe = 0
-            
-            # Aperçu
-            st.subheader("Aperçu")
-            budget_source = budget_df[budget_df['annee'] == annee_source].copy()
-            
-            if ajustement_type == "Pourcentage global":
-                budget_source['nouveau_montant'] = (budget_source['montant_budget'] * (1 + coefficient)).round(0).astype(int)
-            elif ajustement_type == "Montant fixe":
-                budget_source['nouveau_montant'] = (budget_source['montant_budget'] + montant_fixe).astype(int)
+                src['nouveau_montant'] = src['montant_budget']
+            st.metric(f"Budget {nouvelle_annee}", f"{src['nouveau_montant'].sum():,.0f} €")
+            existe = not budget_df[budget_df['annee'] == nouvelle_annee].empty
+            if existe:
+                st.warning(f"⚠️ Budget {nouvelle_annee} existe déjà.")
             else:
-                budget_source['nouveau_montant'] = budget_source['montant_budget']
-            
-            total_ancien = budget_source['montant_budget'].sum()
-            total_nouveau = budget_source['nouveau_montant'].sum()
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric(f"Budget {annee_source}", f"{total_ancien:,.0f} €")
-            with col2:
-                st.metric(f"Nouveau budget {nouvelle_annee}", f"{total_nouveau:,.0f} €")
-            with col3:
-                variation = total_nouveau - total_ancien
-                st.metric("Différence", f"{variation:+,.0f} €", delta=f"{(variation/total_ancien*100):+.1f}%")
-            
-            # Afficher aperçu
-            with st.expander(f"📋 Voir le détail ({len(budget_source)} postes)"):
-                st.dataframe(
-                    budget_source[['compte', 'libelle_compte', 'montant_budget', 'nouveau_montant', 'classe']],
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "compte": "Compte",
-                        "libelle_compte": "Libellé",
-                        "montant_budget": st.column_config.NumberColumn(f"Budget {annee_source}", format="%,.0f €"),
-                        "nouveau_montant": st.column_config.NumberColumn(f"Budget {nouvelle_annee}", format="%,.0f €"),
-                        "classe": "Classe"
-                    }
-                )
-            
-            # Bouton de création
-            st.divider()
-            
-            if not budget_existe:
-                if st.button(f"✨ Créer le budget {nouvelle_annee}", type="primary", use_container_width=True):
+                if st.button(f"✨ Créer le budget {nouvelle_annee}", type="primary"):
                     try:
-                        # Préparer les données
-                        nouveaux_postes = []
-                        for _, row in budget_source.iterrows():
-                            nouveau_poste = {
-                                'compte': int(row['compte']),
-                                'libelle_compte': row['libelle_compte'],
-                                'montant_budget': int(row['nouveau_montant']),
-                                'annee': int(nouvelle_annee),
-                                'classe': row['classe'],
-                                'famille': int(row['famille'])
-                            }
-                            nouveaux_postes.append(nouveau_poste)
-                        
-                        # Insérer par batch
-                        batch_size = 50
-                        total_insere = 0
-                        
-                        for i in range(0, len(nouveaux_postes), batch_size):
-                            batch = nouveaux_postes[i:i+batch_size]
-                            supabase.table('budget').insert(batch).execute()
-                            total_insere += len(batch)
-                        
-                        st.success(f"✅ Budget {nouvelle_annee} créé avec succès ! ({total_insere} postes)")
-                        st.balloons()
-                        st.rerun()
-                        
+                        postes = [{'compte': r['compte'], 'libelle_compte': r['libelle_compte'],
+                                   'montant_budget': int(r['nouveau_montant']), 'annee': int(nouvelle_annee),
+                                   'classe': r['classe'], 'famille': r['famille']} for _, r in src.iterrows()]
+                        for i in range(0, len(postes), 50):
+                            supabase.table('budget').insert(postes[i:i+50]).execute()
+                        st.success(f"✅ Budget {nouvelle_annee} créé ({len(postes)} postes)!"); st.rerun()
                     except Exception as e:
-                        st.error(f"❌ Erreur lors de la création: {str(e)}")
+                        st.error(f"❌ {e}")
 
 # ==================== DÉPENSES ====================
 elif menu == "📝 Dépenses":
     st.markdown("<h1 class='main-header'>📝 Gestion des Dépenses</h1>", unsafe_allow_html=True)
-    
     depenses_df = get_depenses()
     budget_df = get_budget()
-    
+
     if not depenses_df.empty:
-        # Convertir les dates d'abord pour extraire l'année
         depenses_df['date'] = pd.to_datetime(depenses_df['date'])
         depenses_df['annee'] = depenses_df['date'].dt.year
-        
-        # Merge avec le budget SEULEMENT s'il n'est pas vide et a les bonnes colonnes
-        if not budget_df.empty and all(col in budget_df.columns for col in ['compte', 'libelle_compte', 'classe', 'famille']):
-            # Prendre seulement les comptes uniques du budget (éviter les doublons d'années)
-            budget_unique = budget_df.drop_duplicates(subset=['compte'], keep='first')[['compte', 'libelle_compte', 'classe', 'famille']]
-            
-            # Merge avec le budget pour avoir les libellés
-            depenses_df = depenses_df.merge(
-                budget_unique, 
-                on='compte', 
-                how='left',
-                suffixes=('', '_budget')
-            )
-        else:
-            # Si pas de budget, créer des colonnes vides
-            if 'libelle_compte' not in depenses_df.columns:
-                depenses_df['libelle_compte'] = 'N/A'
-        
-        # Convertir montant_du en numérique
         depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
-        
-        # Filtres en haut
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            # Filtre par année
-            annees_depenses = sorted(depenses_df['annee'].unique(), reverse=True)
-            annee_dep_filter = st.selectbox("📅 Année", annees_depenses, key="depenses_annee")
-        
-        with col2:
-            # Filtre par compte
-            comptes_depenses = sorted(depenses_df['compte'].unique())
-            compte_filter = st.multiselect("🔢 Compte", options=comptes_depenses)
-        
-        with col3:
-            # Filtre par classe
-            classe_dep_filter = st.multiselect("🏷️ Classe", options=sorted(depenses_df['classe'].unique()))
-        
-        with col4:
-            # Filtre par fournisseur
-            fournisseur_filter = st.multiselect("🏢 Fournisseur", options=sorted(depenses_df['fournisseur'].unique()))
-        
-        # Application des filtres
-        filtered_depenses = depenses_df[depenses_df['annee'] == annee_dep_filter].copy()
-        
-        if compte_filter:
-            filtered_depenses = filtered_depenses[filtered_depenses['compte'].isin(compte_filter)]
-        if classe_dep_filter:
-            filtered_depenses = filtered_depenses[filtered_depenses['classe'].isin(classe_dep_filter)]
-        if fournisseur_filter:
-            filtered_depenses = filtered_depenses[filtered_depenses['fournisseur'].isin(fournisseur_filter)]
-        
-        # Statistiques FILTRÉES
-        st.divider()
+
+        if not budget_df.empty:
+            bud_uniq = budget_df.drop_duplicates(subset=['compte'], keep='first')[['compte','libelle_compte','classe','famille']]
+            depenses_df = depenses_df.merge(bud_uniq, on='compte', how='left', suffixes=('','_bud'))
+
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Nombre de dépenses", len(filtered_depenses))
+            annee_dep = st.selectbox("📅 Année", sorted(depenses_df['annee'].unique(), reverse=True), key="dep_annee")
         with col2:
-            total_depenses = filtered_depenses['montant_du'].sum()
-            st.metric("Total", f"{total_depenses:,.2f} €")
+            cpt_filter = st.multiselect("🔢 Compte", options=sorted(depenses_df['compte'].dropna().unique()))
         with col3:
-            moyenne = filtered_depenses['montant_du'].mean() if len(filtered_depenses) > 0 else 0
-            st.metric("Moyenne", f"{moyenne:,.2f} €")
+            cl_filter = st.multiselect("🏷️ Classe", options=sorted([c for c in depenses_df['classe'].dropna().unique() if c]))
         with col4:
-            # Budget total pour les comptes concernés
-            if not compte_filter:
-                budget_annee = budget_df[budget_df['annee'] == annee_dep_filter]['montant_budget'].sum()
-            else:
-                budget_annee = budget_df[
-                    (budget_df['annee'] == annee_dep_filter) & 
-                    (budget_df['compte'].isin(compte_filter))
-                ]['montant_budget'].sum()
-            
-            if budget_annee > 0:
-                taux_realisation = (total_depenses / budget_annee * 100)
-                st.metric("Réalisé vs Budget", f"{taux_realisation:.1f}%", 
-                         delta=f"{total_depenses - budget_annee:,.0f} €")
-            else:
-                st.metric("Réalisé vs Budget", "N/A")
-        
+            four_filter = st.multiselect("🏢 Fournisseur", options=sorted(depenses_df['fournisseur'].dropna().unique()))
+
+        dep_f = depenses_df[depenses_df['annee'] == annee_dep].copy()
+        if cpt_filter: dep_f = dep_f[dep_f['compte'].isin(cpt_filter)]
+        if cl_filter: dep_f = dep_f[dep_f['classe'].isin(cl_filter)]
+        if four_filter: dep_f = dep_f[dep_f['fournisseur'].isin(four_filter)]
+
         st.divider()
-        
-        # Onglets
+        c1, c2, c3, c4 = st.columns(4)
+        total_dep = dep_f['montant_du'].sum()
+        bud_tot = budget_df[budget_df['annee'] == annee_dep]['montant_budget'].sum()
+        c1.metric("Nb dépenses", len(dep_f))
+        c2.metric("Total", f"{total_dep:,.2f} €")
+        c3.metric("Moyenne", f"{dep_f['montant_du'].mean():,.2f} €" if len(dep_f) > 0 else "0 €")
+        if bud_tot > 0:
+            c4.metric("Réalisé vs Budget", f"{total_dep/bud_tot*100:.1f}%", delta=f"{total_dep-bud_tot:,.0f} €")
+        else:
+            c4.metric("Réalisé vs Budget", "N/A")
+        st.divider()
+
         tab1, tab2, tab3, tab4 = st.tabs(["📋 Consulter", "✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer"])
-        
-        # =============== ONGLET 1 : CONSULTER ===============
+
         with tab1:
-            st.subheader(f"Dépenses {annee_dep_filter} ({len(filtered_depenses)} lignes)")
-            
-            # Tableau en lecture seule
-            display_df = filtered_depenses[['date', 'compte', 'libelle_compte', 'fournisseur', 'montant_du', 'classe', 'famille', 'commentaire']].copy()
-            display_df['date'] = display_df['date'].dt.strftime('%d/%m/%Y')
-            display_df = display_df.sort_values('date', ascending=False)
-            
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "date": "Date",
-                    "compte": st.column_config.NumberColumn("Compte", format="%d"),
-                    "libelle_compte": "Libellé compte",
-                    "fournisseur": "Fournisseur",
-                    "montant_du": st.column_config.NumberColumn("Montant (€)", format="%,.2f"),
-                    "classe": "Classe",
-                    "famille": st.column_config.NumberColumn("Famille", format="%d"),
-                    "commentaire": "Commentaire"
-                }
-            )
-            
-            # Export
-            st.divider()
-            csv = filtered_depenses.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Exporter en CSV",
-                data=csv,
-                file_name=f"depenses_{annee_dep_filter}.csv",
-                mime="text/csv"
-            )
-        
-        # =============== ONGLET 2 : MODIFIER ===============
+            disp = dep_f[['date','compte','libelle_compte','fournisseur','montant_du','classe','commentaire']].copy().sort_values('date', ascending=False)
+            disp['date'] = disp['date'].dt.strftime('%d/%m/%Y')
+            st.dataframe(disp, use_container_width=True, hide_index=True,
+                column_config={"montant_du": st.column_config.NumberColumn("Montant (€)", format="%,.2f")})
+            st.download_button("📥 Exporter CSV", dep_f.to_csv(index=False).encode('utf-8'), f"depenses_{annee_dep}.csv", "text/csv")
+
         with tab2:
-            st.subheader(f"Modifier les dépenses {annee_dep_filter}")
-            
-            st.info("💡 Modifiez les lignes directement dans le tableau. Toutes les colonnes sont éditables sauf l'ID.")
-            
-            # Tableau éditable
-            edited_depenses = st.data_editor(
-                filtered_depenses[['id', 'date', 'compte', 'fournisseur', 'montant_du', 'commentaire']],
-                use_container_width=True,
-                hide_index=True,
-                disabled=['id'],
+            edited_dep = st.data_editor(
+                dep_f[['id','date','compte','fournisseur','montant_du','commentaire']],
+                use_container_width=True, hide_index=True, disabled=['id'],
                 column_config={
-                    "id": st.column_config.NumberColumn("ID", disabled=True),
                     "date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
-                    "compte": st.column_config.NumberColumn("Compte", format="%d", min_value=0),
-                    "fournisseur": st.column_config.TextColumn("Fournisseur", max_chars=200),
-                    "montant_du": st.column_config.NumberColumn("Montant (€)", format="%.2f", help="Montant positif = dépense, négatif = remboursement/avoir"),
-                    "commentaire": st.column_config.TextColumn("Commentaire", max_chars=500)
-                },
-                key="depenses_editor"
+                    "compte": st.column_config.TextColumn("Compte"),
+                    "fournisseur": st.column_config.TextColumn("Fournisseur"),
+                    "montant_du": st.column_config.NumberColumn("Montant (€)", format="%.2f"),
+                }, key="dep_editor"
             )
-            
-            # Boutons d'action
-            col1, col2, col3 = st.columns([1, 1, 2])
-            
+            col1, col2 = st.columns(2)
             with col1:
-                if st.button("💾 Enregistrer les modifications", type="primary", key="save_depenses_modif"):
+                if st.button("💾 Enregistrer", type="primary", key="save_dep"):
                     try:
-                        modifications = 0
-                        for idx, row in edited_depenses.iterrows():
-                            original_row = filtered_depenses[filtered_depenses['id'] == row['id']]
-                            if not original_row.empty:
-                                original = original_row.iloc[0]
-                                
-                                changed = False
-                                updates = {}
-                                
-                                # Comparer chaque champ
-                                if pd.Timestamp(row['date']).strftime('%Y-%m-%d') != original['date'].strftime('%Y-%m-%d'):
-                                    updates['date'] = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
-                                    changed = True
-                                
-                                if int(row['compte']) != int(original['compte']):
-                                    new_compte = int(row['compte'])
-                                    updates['compte'] = new_compte
-                                    # Mettre à jour classe et famille depuis le budget
-                                    compte_info = budget_df[budget_df['compte'] == new_compte]
-                                    if not compte_info.empty:
-                                        updates['classe'] = compte_info.iloc[0]['classe']
-                                        updates['famille'] = int(compte_info.iloc[0]['famille'])
-                                    changed = True
-                                
-                                if str(row['fournisseur']) != str(original['fournisseur']):
-                                    updates['fournisseur'] = str(row['fournisseur'])
-                                    changed = True
-                                
-                                if float(row['montant_du']) != float(original['montant_du']):
-                                    updates['montant_du'] = float(row['montant_du'])
-                                    changed = True
-                                
-                                commentaire_new = str(row['commentaire']) if pd.notna(row['commentaire']) else None
-                                commentaire_old = str(original['commentaire']) if pd.notna(original['commentaire']) else None
-                                if commentaire_new != commentaire_old:
-                                    updates['commentaire'] = commentaire_new
-                                    changed = True
-                                
-                                if changed:
-                                    supabase.table('depenses').update(updates).eq('id', int(row['id'])).execute()
-                                    modifications += 1
-                        
-                        if modifications > 0:
-                            st.success(f"✅ {modifications} ligne(s) mise(s) à jour avec succès!")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.info("ℹ️ Aucune modification détectée")
+                        mods = 0
+                        for _, row in edited_dep.iterrows():
+                            orig = dep_f[dep_f['id'] == row['id']]
+                            if orig.empty: continue
+                            o = orig.iloc[0]; updates = {}
+                            date_new = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
+                            if date_new != o['date'].strftime('%Y-%m-%d'): updates['date'] = date_new
+                            if str(row['compte']) != str(o['compte']): updates['compte'] = str(row['compte'])
+                            if str(row['fournisseur']) != str(o['fournisseur']): updates['fournisseur'] = str(row['fournisseur'])
+                            if float(row['montant_du']) != float(o['montant_du']): updates['montant_du'] = float(row['montant_du'])
+                            if updates:
+                                supabase.table('depenses').update(updates).eq('id', int(row['id'])).execute(); mods += 1
+                        st.success(f"✅ {mods} ligne(s) mise(s) à jour!") if mods > 0 else st.info("Aucune modification")
+                        if mods > 0: st.rerun()
                     except Exception as e:
-                        st.error(f"❌ Erreur lors de la sauvegarde: {str(e)}")
-            
+                        st.error(f"❌ {e}")
             with col2:
-                if st.button("🔄 Annuler", key="cancel_depenses_modif"):
-                    st.rerun()
-        
-        # =============== ONGLET 3 : AJOUTER ===============
+                if st.button("🔄 Annuler", key="cancel_dep"): st.rerun()
+
         with tab3:
-            st.subheader(f"Ajouter une nouvelle dépense")
-            
-            st.info("💡 Entrez le compte. Si le compte existe, le libellé, classe et famille seront auto-remplis.")
-            
-            # Numéro de compte
-            new_dep_compte = st.number_input(
-                "Numéro de compte *",
-                min_value=0,
-                step=1,
-                format="%d",
-                help="Le compte doit exister dans le budget",
-                key="new_dep_compte"
-            )
-            
-            # Chercher dans le budget
-            compte_budget = None
-            if new_dep_compte > 0:
-                compte_budget = budget_df[budget_df['compte'] == new_dep_compte]
-            
-            # Afficher info si trouvé
-            if compte_budget is not None and not compte_budget.empty:
-                st.success(f"✅ Compte trouvé : {compte_budget.iloc[0]['libelle_compte']} (Classe: {compte_budget.iloc[0]['classe']}, Famille: {compte_budget.iloc[0]['famille']})")
-                auto_classe = compte_budget.iloc[0]['classe']
-                auto_famille = int(compte_budget.iloc[0]['famille'])
-            elif new_dep_compte > 0:
-                st.warning(f"⚠️ Le compte {new_dep_compte} n'existe pas dans le budget. Veuillez utiliser un compte valide.")
-                auto_classe = None
-                auto_famille = None
+            new_cpt = st.text_input("Numéro de compte *", key="new_dep_cpt")
+            cpt_bud = budget_df[budget_df['compte'].astype(str) == str(new_cpt)] if new_cpt and not budget_df.empty else pd.DataFrame()
+            if not cpt_bud.empty:
+                st.success(f"✅ {cpt_bud.iloc[0]['libelle_compte']} — Classe {cpt_bud.iloc[0]['classe']}")
+                auto_classe = cpt_bud.iloc[0]['classe']
+                auto_famille = cpt_bud.iloc[0]['famille']
             else:
-                auto_classe = None
-                auto_famille = None
-            
-            st.divider()
-            st.divider()
-            
-            # Le reste du formulaire (date, fournisseur, montant, commentaire)
-            with st.form("form_add_depense", clear_on_submit=False):
-                st.caption(f"Compte : {new_dep_compte} - {compte_budget.iloc[0]['libelle_compte'] if compte_budget is not None and not compte_budget.empty else 'Non trouvé'}")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    form_dep_date = st.date_input(
-                        "Date *",
-                        value=datetime.now(),
-                        help="Date de la dépense"
-                    )
-                    
-                    form_dep_fournisseur = st.text_input(
-                        "Fournisseur *",
-                        max_chars=200,
-                        help="Nom du fournisseur"
-                    )
-                
-                with col2:
-                    form_dep_montant = st.number_input(
-                        "Montant (€) *",
-                        step=0.01,
-                        format="%.2f",
-                        help="Montant positif = dépense, négatif = remboursement/avoir"
-                    )
-                    
-                    form_dep_commentaire = st.text_area(
-                        "Commentaire (optionnel)",
-                        max_chars=500,
-                        help="Commentaire libre"
-                    )
-                
-                # Bouton de soumission du formulaire
-                submitted = st.form_submit_button("✨ Ajouter la dépense", type="primary", use_container_width=True)
-                
-                if submitted:
-                    errors = []
-                    
-                    if new_dep_compte <= 0:
-                        errors.append("Le compte est obligatoire")
-                    
-                    if auto_classe is None or auto_famille is None:
-                        errors.append(f"Le compte {new_dep_compte} n'existe pas dans le budget")
-                    
-                    if not form_dep_fournisseur or form_dep_fournisseur.strip() == "":
-                        errors.append("Le fournisseur est obligatoire")
-                    
-                    if form_dep_montant == 0:
-                        errors.append("Le montant ne peut pas être 0 (utilisez + pour dépense, - pour remboursement)")
-                    
-                    if errors:
-                        for error in errors:
-                            st.error(f"❌ {error}")
-                    else:
+                auto_classe = None; auto_famille = None
+                if new_cpt: st.warning("⚠️ Compte non trouvé dans le budget")
+            with st.form("form_dep"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    dep_date = st.date_input("Date *", value=datetime.now())
+                    dep_four = st.text_input("Fournisseur *")
+                with c2:
+                    dep_mont = st.number_input("Montant (€) *", step=0.01, format="%.2f")
+                    dep_comm = st.text_area("Commentaire")
+                if st.form_submit_button("✨ Ajouter la dépense", type="primary", use_container_width=True):
+                    if new_cpt and auto_classe and dep_four and dep_mont != 0:
                         try:
-                            nouvelle_depense = {
-                                'date': form_dep_date.strftime('%Y-%m-%d'),
-                                'compte': int(new_dep_compte),
-                                'fournisseur': form_dep_fournisseur.strip(),
-                                'montant_du': float(form_dep_montant),
-                                'classe': auto_classe,
-                                'famille': auto_famille,
-                                'commentaire': form_dep_commentaire.strip() if form_dep_commentaire else None
-                            }
-                            
-                            supabase.table('depenses').insert(nouvelle_depense).execute()
-                            
-                            st.success(f"✅ Dépense de {form_dep_montant:.2f} € ajoutée avec succès!")
-                            st.balloons()
-                            st.rerun()
-                            
+                            supabase.table('depenses').insert({
+                                'date': dep_date.strftime('%Y-%m-%d'), 'compte': new_cpt,
+                                'fournisseur': dep_four.strip(), 'montant_du': float(dep_mont),
+                                'classe': auto_classe, 'famille': auto_famille,
+                                'commentaire': dep_comm.strip() if dep_comm else None
+                            }).execute()
+                            st.success("✅ Dépense ajoutée!"); st.rerun()
                         except Exception as e:
-                            st.error(f"❌ Erreur lors de l'ajout: {str(e)}")
-            
-            # Aide
-            st.divider()
-            with st.expander(f"📊 Comptes disponibles dans le budget {annee_dep_filter}"):
-                budget_annee = budget_df[budget_df['annee'] == annee_dep_filter]
-                if not budget_annee.empty:
-                    st.dataframe(
-                        budget_annee[['compte', 'libelle_compte', 'classe', 'famille']].sort_values('compte'),
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                else:
-                    st.info(f"Aucun compte dans le budget {annee_dep_filter}")
-        
-        # =============== ONGLET 4 : SUPPRIMER ===============
+                            st.error(f"❌ {e}")
+                    else:
+                        st.error("❌ Remplissez tous les champs obligatoires (compte valide, fournisseur, montant ≠ 0)")
+
         with tab4:
-            st.subheader(f"Supprimer des dépenses {annee_dep_filter}")
-            
-            st.warning("⚠️ La suppression est définitive et ne peut pas être annulée.")
-            
-            if not filtered_depenses.empty:
-                st.info("💡 Sélectionnez les dépenses à supprimer.")
-                
-                # Sélection
-                ids_to_delete = st.multiselect(
-                    "Sélectionner les dépenses à supprimer",
-                    options=filtered_depenses['id'].tolist(),
-                    format_func=lambda x: f"ID {x} - {filtered_depenses[filtered_depenses['id']==x]['date'].dt.strftime('%d/%m/%Y').values[0]} - {filtered_depenses[filtered_depenses['id']==x]['fournisseur'].values[0]} - {filtered_depenses[filtered_depenses['id']==x]['montant_du'].values[0]:.2f} €"
-                )
-                
-                if ids_to_delete:
-                    st.warning(f"🗑️ {len(ids_to_delete)} dépense(s) sélectionnée(s) pour suppression")
-                    
-                    # Aperçu
-                    lines_to_delete = filtered_depenses[filtered_depenses['id'].isin(ids_to_delete)]
-                    display_delete = lines_to_delete[['date', 'fournisseur', 'montant_du', 'libelle_compte']].copy()
-                    display_delete['date'] = display_delete['date'].dt.strftime('%d/%m/%Y')
-                    st.dataframe(
-                        display_delete,
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                    
-                    col1, col2, col3 = st.columns([1, 1, 2])
-                    
-                    with col1:
-                        if st.button("🗑️ Confirmer la suppression", type="secondary", key="confirm_delete_depenses"):
-                            # Créer une clé unique pour cette suppression
-                            delete_key = f"delete_depenses_{'-'.join(map(str, sorted(ids_to_delete)))}"
-                            
-                            # Vérifier si cette suppression n'a pas déjà été faite
-                            if 'last_delete' not in st.session_state or st.session_state.last_delete != delete_key:
-                                try:
-                                    # Supprimer les lignes
-                                    for id_to_del in ids_to_delete:
-                                        supabase.table('depenses').delete().eq('id', id_to_del).execute()
-                                    
-                                    # Marquer comme supprimé
-                                    st.session_state.last_delete = delete_key
-                                    
-                                    st.success(f"✅ {len(ids_to_delete)} dépense(s) supprimée(s) avec succès!")
-                                    st.rerun()
-                                    
-                                except Exception as e:
-                                    st.error(f"❌ Erreur lors de la suppression: {str(e)}")
-                            else:
-                                st.info("Ces lignes ont déjà été supprimées. Rafraîchissez la page (F5).")
-                    
-                    with col2:
-                        if st.button("❌ Annuler", key="cancel_delete_depenses"):
-                            # Réinitialiser le flag de suppression
-                            if 'last_delete' in st.session_state:
-                                del st.session_state.last_delete
-                            st.rerun()
-                else:
-                    st.info("ℹ️ Sélectionnez au moins une dépense pour activer la suppression")
-            else:
-                st.info("ℹ️ Aucune dépense à supprimer avec les filtres actuels")
+            st.warning("⚠️ La suppression est définitive.")
+            ids_del = st.multiselect("Sélectionner les dépenses",
+                options=dep_f['id'].tolist(),
+                format_func=lambda x: f"ID {x} — {dep_f[dep_f['id']==x]['fournisseur'].values[0]} — {dep_f[dep_f['id']==x]['montant_du'].values[0]:.2f} €")
+            if ids_del:
+                if st.button("🗑️ Confirmer la suppression", type="secondary"):
+                    for i in ids_del: supabase.table('depenses').delete().eq('id', i).execute()
+                    st.success(f"✅ {len(ids_del)} dépense(s) supprimée(s)"); st.rerun()
     else:
-        # Pas de données - créer structure vide mais afficher les onglets
-        st.info("💡 Aucune dépense enregistrée. Utilisez l'onglet 'Ajouter' pour commencer.")
-        depenses_df = pd.DataFrame(columns=['id', 'date', 'compte', 'fournisseur', 'montant_du', 'classe', 'famille', 'commentaire', 'annee', 'libelle_compte'])
-        annee_dep_filter = datetime.now().year
-        filtered_depenses = depenses_df.copy()
+        st.info("💡 Aucune dépense. Utilisez l'onglet ➕ Ajouter.")
 
 # ==================== COPROPRIÉTAIRES ====================
 elif menu == "👥 Copropriétaires":
     st.markdown("<h1 class='main-header'>👥 Copropriétaires</h1>", unsafe_allow_html=True)
-    
     copro_df = get_coproprietaires()
-    
+
     if not copro_df.empty:
-        # Convertir tantieme en numérique
-        copro_df['tantieme'] = pd.to_numeric(copro_df['tantieme'], errors='coerce')
-        
-        total_tantiemes = copro_df['tantieme'].sum()
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Nombre de copropriétaires", len(copro_df))
-        with col2:
-            st.metric("Total tantièmes", int(total_tantiemes))
-        with col3:
-            st.metric("Moyenne", f"{copro_df['tantieme'].mean():.1f}")
-        
+        copro_df = prepare_copro(copro_df)
+        tantieme_cols = ['tantieme_general','tantieme_ascenseurs','tantieme_rdc_ssols','tantieme_garages','tantieme_ssols','tantieme_monte_voitures']
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Copropriétaires", len(copro_df))
+        c2.metric("Total tantièmes généraux", int(copro_df['tantieme_general'].sum()))
+        c3.metric("Lots parkings", len(copro_df[copro_df['usage']=='parking']) if 'usage' in copro_df.columns else "—")
+
         st.divider()
-        
+        # Vérifier si les tantièmes spécifiques sont remplis
+        remplis = {col: int(copro_df[col].sum()) for col in tantieme_cols if col in copro_df.columns}
+        st.subheader("🔑 État des clés de répartition")
+        cols = st.columns(len(remplis))
+        for i, (col, total) in enumerate(remplis.items()):
+            label = col.replace('tantieme_','').replace('_',' ').title()
+            status = "✅" if total > 0 else "⚠️ À remplir"
+            cols[i].metric(f"{status} {label}", f"{total:,}")
+
+        if any(v == 0 for v in remplis.values()):
+            st.warning("⚠️ Certains tantièmes sont à 0. Exécutez **UPDATE_TANTIEMES.sql** dans Supabase pour les remplir.")
+
+        st.divider()
         col1, col2 = st.columns([1, 1])
-        
         with col1:
-            st.subheader("Répartition des tantièmes")
-            fig = px.pie(copro_df, values='tantieme', names='nom')
+            st.subheader("Répartition des tantièmes généraux")
+            fig = px.pie(copro_df, values='tantieme_general', names='nom')
+            fig.update_traces(textposition='inside', textinfo='percent')
             st.plotly_chart(fig, use_container_width=True)
-        
         with col2:
             st.subheader("Liste des copropriétaires")
-            copro_display = copro_df.copy()
-            copro_display['pourcentage'] = (copro_display['tantieme'] / total_tantiemes * 100).round(2)
-            st.dataframe(copro_display, use_container_width=True, hide_index=True)
+            disp_cols = ['lot','nom','etage','usage','tantieme_general'] + [c for c in tantieme_cols[1:] if c in copro_df.columns]
+            st.dataframe(copro_df[disp_cols].sort_values('lot' if 'lot' in copro_df.columns else 'nom'),
+                use_container_width=True, hide_index=True)
 
 # ==================== RÉPARTITION ====================
 elif menu == "🔄 Répartition":
-    st.markdown("<h1 class='main-header'>🔄 Répartition des Charges</h1>", unsafe_allow_html=True)
-    
+    st.markdown("<h1 class='main-header'>🔄 Appels de Fonds & Répartition</h1>", unsafe_allow_html=True)
+
     copro_df = get_coproprietaires()
+    budget_df = get_budget()
     depenses_df = get_depenses()
-    
-    if not copro_df.empty and not depenses_df.empty:
-        # Convertir en numérique
-        copro_df['tantieme'] = pd.to_numeric(copro_df['tantieme'], errors='coerce')
-        depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
-        
+
+    if copro_df.empty:
+        st.error("❌ Impossible de charger les copropriétaires"); st.stop()
+
+    copro_df = prepare_copro(copro_df)
+
+    # Vérifier état des tantièmes
+    tantieme_ok = copro_df['tantieme_general'].sum() > 0
+    autres_ok = any(copro_df.get(CHARGES_CONFIG[k]['col'], pd.Series([0])).sum() > 0 for k in ['ascenseurs','rdc_ssols','garages','ssols'])
+
+    if not autres_ok:
+        st.warning("⚠️ Les tantièmes spécifiques (ascenseurs, garages, etc.) sont à 0. Exécutez **UPDATE_TANTIEMES.sql** dans Supabase. En attendant, tout est réparti sur les tantièmes généraux.")
+        # Fallback temporaire
+        for key in ['ascenseurs','rdc_ssols','garages','ssols']:
+            col = CHARGES_CONFIG[key]['col']
+            if col not in copro_df.columns or copro_df[col].sum() == 0:
+                copro_df[col] = copro_df['tantieme_general']
+
+    tab1, tab2, tab3 = st.tabs([
+        "📅 Appels provisionnels (T1/T2/T3/T4)",
+        "🔄 5ème appel — Régularisation",
+        "📊 Vue globale annuelle"
+    ])
+
+    # ---- Budget sélectionné ----
+    if not budget_df.empty:
+        annees_bud = sorted(budget_df['annee'].unique(), reverse=True)
+    else:
+        annees_bud = [datetime.now().year]
+
+    # ==================== ONGLET 1 : APPELS PROVISIONNELS ====================
+    with tab1:
+        st.subheader("Calcul des appels de fonds provisionnels")
+        st.info("Les appels sont calculés sur le **budget prévisionnel**, réparti selon les clés de tantièmes de votre règlement de copropriété.")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            annee_appel = st.selectbox("📅 Année", annees_bud, key="appel_annee")
+        with col2:
+            trimestre = st.selectbox("📆 Appel", ["T1 — Janvier","T2 — Avril","T3 — Juillet","T4 — Octobre"], key="appel_trim")
+        with col3:
+            nb_appels = st.selectbox("Nb appels / an", [4, 3, 2, 1], index=0, key="nb_appels")
+
+        label_trim = trimestre.split(" ")[0]
+
+        if budget_df.empty:
+            st.warning("⚠️ Aucun budget. Créez-en un dans 💰 Budget.")
+        else:
+            bud_an = budget_df[budget_df['annee'] == annee_appel]
+            if bud_an.empty:
+                st.warning(f"⚠️ Aucun budget pour {annee_appel}.")
+            else:
+                # Calcul automatique des montants par type depuis le budget
+                total_bud = bud_an['montant_budget'].sum()
+
+                # Montants par type basé sur les classes du budget
+                montants_auto = {}
+                for key, cfg in CHARGES_CONFIG.items():
+                    classes = cfg['classes']
+                    montants_auto[key] = float(bud_an[bud_an['classe'].isin(classes)]['montant_budget'].sum())
+
+                st.divider()
+                st.subheader(f"⚙️ Montants annuels par type de charge — Budget {annee_appel}")
+                st.caption("Calculés automatiquement depuis votre budget. Vous pouvez les ajuster.")
+
+                col1, col2, col3 = st.columns(3)
+                montants = {}
+                items = list(CHARGES_CONFIG.items())
+                for i, (key, cfg) in enumerate(items):
+                    col = [col1, col2, col3][i % 3]
+                    with col:
+                        montants[key] = st.number_input(
+                            f"{cfg['emoji']} {cfg['label']} (€/an)",
+                            min_value=0, value=int(montants_auto.get(key, 0)),
+                            step=100, key=f"mont_{key}",
+                            help=f"Réparti sur {cfg['total']:,} tantièmes — Classes : {', '.join(cfg['classes'])}"
+                        )
+
+                total_configure = sum(montants.values())
+                st.divider()
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total configuré", f"{total_configure:,.0f} €")
+                c2.metric("Budget prévu", f"{total_bud:,.0f} €")
+                ecart_cfg = total_configure - total_bud
+                c3.metric("Écart", f"{ecart_cfg:+,.0f} €", delta_color="normal" if abs(ecart_cfg) < 100 else "inverse")
+
+                if abs(ecart_cfg) > 500:
+                    st.warning(f"⚠️ Différence de {abs(ecart_cfg):,.0f} € entre le total configuré et le budget.")
+
+                st.divider()
+                st.subheader(f"📋 Appel {label_trim} {annee_appel} — {100//nb_appels}% du budget annuel")
+
+                # Calcul
+                appels_df = calculer_appels(copro_df, montants)
+                appels_df[f'🎯 APPEL {label_trim} (€)'] = (appels_df['💰 TOTAL Annuel (€)'] / nb_appels).round(2)
+
+                show_detail = st.checkbox("Afficher le détail par type de charge", value=False, key="show_det")
+
+                detail_cols = [f"{CHARGES_CONFIG[k]['emoji']} {CHARGES_CONFIG[k]['label']}" for k in CHARGES_CONFIG]
+                base_cols = ['Lot','Copropriétaire','Étage','Usage']
+                if show_detail:
+                    display_cols = base_cols + detail_cols + ['💰 TOTAL Annuel (€)', f'🎯 APPEL {label_trim} (€)']
+                else:
+                    display_cols = base_cols + ['💰 TOTAL Annuel (€)', f'🎯 APPEL {label_trim} (€)']
+
+                display_cols = [c for c in display_cols if c in appels_df.columns]
+
+                st.dataframe(appels_df[display_cols], use_container_width=True, hide_index=True,
+                    column_config={
+                        f'🎯 APPEL {label_trim} (€)': st.column_config.NumberColumn(format="%.2f"),
+                        '💰 TOTAL Annuel (€)': st.column_config.NumberColumn(format="%.2f"),
+                    })
+
+                st.divider()
+                c1, c2, c3, c4 = st.columns(4)
+                total_appel = appels_df[f'🎯 APPEL {label_trim} (€)'].sum()
+                c1.metric(f"Total appel {label_trim}", f"{total_appel:,.2f} €")
+                c2.metric("Total annuel", f"{appels_df['💰 TOTAL Annuel (€)'].sum():,.2f} €")
+                c3.metric("Nb copropriétaires", len(appels_df))
+                c4.metric("Appel moyen", f"{appels_df[f'🎯 APPEL {label_trim} (€)'].mean():,.2f} €")
+
+                csv_appel = appels_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+                st.download_button(
+                    f"📥 Exporter appel {label_trim} {annee_appel} (CSV)",
+                    csv_appel, f"appel_{label_trim}_{annee_appel}.csv", "text/csv"
+                )
+
+                st.divider()
+                col1, col2 = st.columns(2)
+                with col1:
+                    top15 = appels_df.nlargest(15, f'🎯 APPEL {label_trim} (€)')
+                    fig = px.bar(top15, x='Copropriétaire', y=f'🎯 APPEL {label_trim} (€)',
+                        color='Usage', title=f"Top 15 — Appel {label_trim} {annee_appel}",
+                        text=f'🎯 APPEL {label_trim} (€)')
+                    fig.update_traces(texttemplate='%{text:.0f}€', textposition='outside')
+                    fig.update_layout(xaxis_tickangle=45)
+                    st.plotly_chart(fig, use_container_width=True)
+                with col2:
+                    type_data = pd.DataFrame([
+                        {'Type': f"{cfg['emoji']} {cfg['label']}", 'Montant': montants[k]}
+                        for k, cfg in CHARGES_CONFIG.items() if montants[k] > 0
+                    ])
+                    if not type_data.empty:
+                        fig = px.pie(type_data, values='Montant', names='Type', title="Répartition par type de charge")
+                        st.plotly_chart(fig, use_container_width=True)
+
+    # ==================== ONGLET 2 : RÉGULARISATION ====================
+    with tab2:
+        st.subheader("5ème appel — Régularisation annuelle")
+        st.info("Calcule la différence entre les **dépenses réelles** et les **provisions versées**. Solde positif = à appeler. Négatif = à rembourser.")
+
         col1, col2 = st.columns(2)
         with col1:
-            date_debut = st.date_input("Période du", datetime(2025, 1, 1), key="rep_debut")
+            annee_reg = st.selectbox("📅 Année à régulariser", annees_bud, key="reg_annee")
         with col2:
-            date_fin = st.date_input("Au", datetime.now(), key="rep_fin")
-        
-        depenses_df['date'] = pd.to_datetime(depenses_df['date'])
-        depenses_periode = depenses_df[
-            (depenses_df['date'] >= pd.Timestamp(date_debut)) & 
-            (depenses_df['date'] <= pd.Timestamp(date_fin))
-        ]
-        
-        total_depenses = depenses_periode['montant_du'].sum()
-        total_tantiemes = copro_df['tantieme'].sum()
-        
-        st.info(f"**Total des dépenses** : {total_depenses:,.2f} €")
-        
-        repartition = []
-        for _, copro in copro_df.iterrows():
-            part = (copro['tantieme'] / total_tantiemes) * total_depenses
-            repartition.append({
-                'Copropriétaire': copro['nom'],
-                'Lot': copro['lot'],
-                'Tantièmes': copro['tantieme'],
-                'Part (%)': round(copro['tantieme'] / total_tantiemes * 100, 2),
-                'Montant dû (€)': round(part, 2)
-            })
-        
-        repartition_df = pd.DataFrame(repartition)
-        
-        st.subheader("Répartition par copropriétaire")
-        st.dataframe(repartition_df, use_container_width=True, hide_index=True)
-        
-        fig = px.bar(repartition_df, x='Copropriétaire', y='Montant dû (€)',
-                     color='Part (%)', text='Montant dû (€)')
+            nb_appels_reg = st.selectbox("Nb appels provisionnels versés", [4,3,2,1], key="nb_reg")
+
+        if depenses_df.empty:
+            st.warning("⚠️ Aucune dépense disponible.")
+        else:
+            depenses_df['date'] = pd.to_datetime(depenses_df['date'])
+            depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
+            dep_reg = depenses_df[depenses_df['date'].dt.year == annee_reg].copy()
+            total_dep_reel = dep_reg['montant_du'].sum()
+
+            # Dépenses réelles par type de charge (via mapping classe)
+            dep_par_type_auto = {}
+            for key, cfg in CHARGES_CONFIG.items():
+                if 'classe' in dep_reg.columns:
+                    dep_par_type_auto[key] = float(dep_reg[dep_reg['classe'].isin(cfg['classes'])]['montant_du'].sum())
+                else:
+                    dep_par_type_auto[key] = 0
+
+            st.divider()
+            st.subheader("💰 Provisions versées vs Dépenses réelles")
+            st.caption("Entrez les provisions appelées sur l'année. Les dépenses réelles sont calculées automatiquement depuis vos dépenses.")
+
+            col1, col2, col3 = st.columns(3)
+            provisions = {}
+            reels_saisis = {}
+            items = list(CHARGES_CONFIG.items())
+            for i, (key, cfg) in enumerate(items):
+                col = [col1, col2, col3][i % 3]
+                with col:
+                    provisions[key] = st.number_input(
+                        f"{cfg['emoji']} Provisions {cfg['label']} (€)",
+                        min_value=0.0, step=100.0, key=f"prov_{key}"
+                    )
+                    reels_saisis[key] = st.number_input(
+                        f"Dépenses réelles (€)",
+                        min_value=0.0,
+                        value=round(dep_par_type_auto.get(key, 0.0), 2),
+                        step=100.0, key=f"reel_{key}"
+                    )
+
+            total_prov = sum(provisions.values())
+            total_reel = sum(reels_saisis.values())
+            solde_global = total_reel - total_prov
+
+            st.divider()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Dépenses réelles totales", f"{total_dep_reel:,.2f} €")
+            c2.metric("Provisions totales versées", f"{total_prov:,.2f} €")
+            c3.metric("Dépenses réelles saisies", f"{total_reel:,.2f} €")
+            c4.metric("Solde à régulariser", f"{solde_global:+,.2f} €",
+                delta_color="inverse" if solde_global > 0 else "normal")
+
+            if total_prov == 0:
+                st.info("💡 Entrez les provisions versées pour calculer la régularisation.")
+            else:
+                st.divider()
+                st.subheader(f"📋 5ème appel de régularisation {annee_reg}")
+
+                reg_list = []
+                for _, cop in copro_df.iterrows():
+                    prov_cop = 0
+                    reel_cop = 0
+                    for key, cfg in CHARGES_CONFIG.items():
+                        tant = float(cop.get(cfg['col'], 0) or 0)
+                        if cfg['total'] > 0 and tant > 0:
+                            prov_cop += (tant / cfg['total']) * provisions[key]
+                            reel_cop += (tant / cfg['total']) * reels_saisis[key]
+                    reg = reel_cop - prov_cop
+                    reg_list.append({
+                        'Lot': cop.get('lot',''), 'Copropriétaire': cop.get('nom',''),
+                        'Étage': cop.get('etage',''), 'Usage': cop.get('usage',''),
+                        'Provisions versées (€)': round(prov_cop, 2),
+                        'Dépenses réelles (€)': round(reel_cop, 2),
+                        'Régularisation (€)': round(reg, 2),
+                        'Sens': '💳 À payer' if reg > 0.01 else ('💚 À rembourser' if reg < -0.01 else '✅ Équilibré')
+                    })
+
+                reg_df = pd.DataFrame(reg_list)
+                st.dataframe(reg_df, use_container_width=True, hide_index=True,
+                    column_config={
+                        'Provisions versées (€)': st.column_config.NumberColumn(format="%.2f"),
+                        'Dépenses réelles (€)': st.column_config.NumberColumn(format="%.2f"),
+                        'Régularisation (€)': st.column_config.NumberColumn(format="%.2f"),
+                    })
+
+                st.divider()
+                c1, c2, c3, c4 = st.columns(4)
+                a_payer = reg_df[reg_df['Régularisation (€)'] > 0.01]['Régularisation (€)'].sum()
+                a_rembourser = abs(reg_df[reg_df['Régularisation (€)'] < -0.01]['Régularisation (€)'].sum())
+                c1.metric("Total provisions", f"{reg_df['Provisions versées (€)'].sum():,.2f} €")
+                c2.metric("Total réel", f"{reg_df['Dépenses réelles (€)'].sum():,.2f} €")
+                c3.metric("Montant à appeler", f"{a_payer:,.2f} €")
+                c4.metric("Montant à rembourser", f"{a_rembourser:,.2f} €")
+
+                csv_reg = reg_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+                st.download_button(f"📥 Exporter régularisation {annee_reg}", csv_reg, f"regularisation_{annee_reg}.csv", "text/csv")
+
+    # ==================== ONGLET 3 : VUE GLOBALE ====================
+    with tab3:
+        st.subheader("📊 Vue globale annuelle — Charges par copropriétaire")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            annee_glob = st.selectbox("📅 Année", annees_bud, key="glob_annee")
+        with col2:
+            nb_appels_glob = st.selectbox("Nb appels / an", [4,3,2,1], key="glob_nb")
+
+        bud_glob = budget_df[budget_df['annee'] == annee_glob] if not budget_df.empty else pd.DataFrame()
+        total_bud_glob = bud_glob['montant_budget'].sum() if not bud_glob.empty else 0
+
+        st.info(f"Budget {annee_glob} : **{total_bud_glob:,.0f} €** | {len(copro_df)} copropriétaires")
+        st.divider()
+
+        # Montants auto depuis budget
+        montants_glob_auto = {}
+        for key, cfg in CHARGES_CONFIG.items():
+            if not bud_glob.empty:
+                montants_glob_auto[key] = float(bud_glob[bud_glob['classe'].isin(cfg['classes'])]['montant_budget'].sum())
+            else:
+                montants_glob_auto[key] = 0
+
+        st.subheader("⚙️ Ventilation du budget par type de charge")
+        col1, col2, col3 = st.columns(3)
+        montants_glob = {}
+        for i, (key, cfg) in enumerate(CHARGES_CONFIG.items()):
+            col = [col1, col2, col3][i % 3]
+            with col:
+                montants_glob[key] = st.number_input(
+                    f"{cfg['emoji']} {cfg['label']} (€)",
+                    min_value=0, value=int(montants_glob_auto.get(key, 0)),
+                    step=100, key=f"glob_{key}"
+                )
+
+        total_glob = sum(montants_glob.values())
+        st.divider()
+
+        glob_df = calculer_appels(copro_df, montants_glob)
+
+        # Ajouter les colonnes trimestrielles
+        for t in ['T1','T2','T3','T4']:
+            glob_df[f'{t} (€)'] = (glob_df['💰 TOTAL Annuel (€)'] / nb_appels_glob).round(2)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total configuré", f"{total_glob:,.0f} €")
+        c2.metric("Total réparti", f"{glob_df['💰 TOTAL Annuel (€)'].sum():,.2f} €")
+        c3.metric("Charge moyenne", f"{glob_df['💰 TOTAL Annuel (€)'].mean():,.2f} €")
+
+        st.divider()
+        display_cols = ['Lot','Copropriétaire','Étage','Usage','💰 TOTAL Annuel (€)','T1 (€)','T2 (€)','T3 (€)','T4 (€)']
+        display_cols = [c for c in display_cols if c in glob_df.columns]
+        st.dataframe(glob_df[display_cols], use_container_width=True, hide_index=True,
+            column_config={c: st.column_config.NumberColumn(format="%.2f") for c in display_cols if '€' in c})
+
+        fig = px.bar(
+            glob_df.sort_values('💰 TOTAL Annuel (€)', ascending=False),
+            x='Copropriétaire', y='💰 TOTAL Annuel (€)',
+            color='Usage', title=f"Charges annuelles {annee_glob} par copropriétaire",
+            text='💰 TOTAL Annuel (€)'
+        )
+        fig.update_traces(texttemplate='%{text:.0f}€', textposition='outside')
+        fig.update_layout(xaxis_tickangle=45, height=500)
         st.plotly_chart(fig, use_container_width=True)
+
+        csv_glob = glob_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+        st.download_button(f"📥 Exporter vue globale {annee_glob}", csv_glob, f"charges_{annee_glob}.csv", "text/csv")
 
 # ==================== ANALYSES ====================
 elif menu == "📈 Analyses":
     st.markdown("<h1 class='main-header'>📈 Analyses Avancées</h1>", unsafe_allow_html=True)
-    
     depenses_df = get_depenses()
     budget_df = get_budget()
-    
+
     if not depenses_df.empty and not budget_df.empty:
         depenses_df['date'] = pd.to_datetime(depenses_df['date'])
         depenses_df['annee'] = depenses_df['date'].dt.year
         depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
-        
-        # FILTRE PAR ANNÉE
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            annees_disponibles = sorted(depenses_df['annee'].unique(), reverse=True)
-            if annees_disponibles:
-                annee_analyse = st.selectbox("📅 Année", annees_disponibles, key="analyse_annee")
-            else:
-                annee_analyse = datetime.now().year
-        
-        # Filtrer par année
-        depenses_annee = depenses_df[depenses_df['annee'] == annee_analyse].copy()
-        budget_annee = budget_df[budget_df['annee'] == annee_analyse].copy()
-        
-        # ========== TABLEAU ANALYSE PAR CLASSE ==========
-        st.subheader(f"📊 Analyse par Classe - {annee_analyse}")
-        
-        # Définir les classes et leurs libellés
-        classes_config = {
-            '1A': 'Charges courantes',
-            '1B': 'Entretien courant',
-            '2': 'Électricité/Chauffage',
-            '3': 'Assurances',
-            '4': 'Impôts et taxes',
-            '5': 'Travaux',
-            '6': 'Honoraires',
-            '7': 'Charges financières'
+
+        annees = sorted(depenses_df['annee'].unique(), reverse=True)
+        annee_a = st.selectbox("📅 Année", annees, key="anal_annee")
+        dep_a = depenses_df[depenses_df['annee'] == annee_a].copy()
+        bud_a = budget_df[budget_df['annee'] == annee_a].copy()
+
+        st.divider()
+        st.subheader(f"📊 Analyse Budget vs Réalisé par Classe — {annee_a}")
+
+        classes_labels = {
+            '1A':'Charges courantes', '1B':'Entretien courant', '2':'Élec. RDC/ss-sols',
+            '3':'Élec. sous-sols', '4':'Garages/Parkings', '5':'Ascenseurs',
+            '6':'Monte-voitures', '7':'Travaux/Divers'
         }
-        
-        # Calculer pour chaque classe
-        analyse_rows = []
-        
-        # Sous-groupes pour les sous-totaux
-        sous_groupes = {
-            'S/T 1A+1B': ['1A', '1B'],
-            'S/T 2': ['2'],
-            'S/T 3': ['3'],
-            'S/T 4': ['4'],
-            'S/T 5': ['5'],
-            'S/T 6': ['6'],
-            'S/T 7': ['7']
-        }
-        
-        total_budget = 0
-        total_depenses = 0
-        
-        for classe, libelle in classes_config.items():
-            # Budget pour cette classe
-            budget_classe = budget_annee[budget_annee['classe'] == classe]['montant_budget'].sum()
-            # Dépenses pour cette classe
-            depenses_classe = depenses_annee[depenses_annee['classe'] == classe]['montant_du'].sum()
-            # Écart
-            ecart = budget_classe - depenses_classe
-            # Pourcentage
-            pct = (depenses_classe / budget_classe * 100) if budget_classe > 0 else 0
-            
-            analyse_rows.append({
-                'classe': classe,
-                'libelle_classe': libelle,
-                'montant_budget': budget_classe,
-                'montant_depenses': depenses_classe,
-                'ecart': ecart,
-                'pct': pct
-            })
-            
-            total_budget += budget_classe
-            total_depenses += depenses_classe
-            
-            # Ajouter sous-total après certaines classes
-            for st_label, st_classes in sous_groupes.items():
-                if classe == st_classes[-1]:  # Dernière classe du groupe
-                    st_budget = sum([row['montant_budget'] for row in analyse_rows if row['classe'] in st_classes])
-                    st_depenses = sum([row['montant_depenses'] for row in analyse_rows if row['classe'] in st_classes])
-                    st_ecart = st_budget - st_depenses
-                    st_pct = (st_depenses / st_budget * 100) if st_budget > 0 else 0
-                    
-                    analyse_rows.append({
-                        'classe': st_label,
-                        'libelle_classe': 'Sous-total',
-                        'montant_budget': st_budget,
-                        'montant_depenses': st_depenses,
-                        'ecart': st_ecart,
-                        'pct': st_pct
-                    })
-        
-        # Ligne vide
-        analyse_rows.append({
-            'classe': '',
-            'libelle_classe': '',
-            'montant_budget': None,
-            'montant_depenses': None,
-            'ecart': None,
-            'pct': None
-        })
-        
-        # Total général
-        total_ecart = total_budget - total_depenses
-        total_pct = (total_depenses / total_budget * 100) if total_budget > 0 else 0
-        
-        analyse_rows.append({
-            'classe': 'TOTAL GÉNÉRAL',
-            'libelle_classe': '',
-            'montant_budget': total_budget,
-            'montant_depenses': total_depenses,
-            'ecart': total_ecart,
-            'pct': total_pct
-        })
-        
-        # Créer le DataFrame
-        analyse_df = pd.DataFrame(analyse_rows)
-        
-        # Fonction pour styler les lignes
-        def style_row(row):
-            if row['classe'] in ['TOTAL GÉNÉRAL']:
-                return ['background-color: #1f77b4; color: white; font-weight: bold'] * len(row)
-            elif row['classe'].startswith('S/T'):
-                return ['background-color: #e6f2ff; font-weight: bold'] * len(row)
-            elif row['classe'] == '':
-                return ['background-color: white'] * len(row)
-            else:
-                return [''] * len(row)
-        
-        # Afficher le tableau
-        st.dataframe(
-            analyse_df,
-            use_container_width=True,
-            hide_index=True,
+        rows = []
+        tot_bud = 0; tot_dep = 0
+        for cl, lib in classes_labels.items():
+            b = float(bud_a[bud_a['classe']==cl]['montant_budget'].sum()) if 'classe' in bud_a.columns else 0
+            d = float(dep_a[dep_a['classe']==cl]['montant_du'].sum()) if 'classe' in dep_a.columns else 0
+            rows.append({'Classe': cl, 'Libellé': lib, 'Budget (€)': b, 'Dépenses (€)': d,
+                         'Écart (€)': b-d, '% Réalisé': round(d/b*100,1) if b > 0 else 0})
+            tot_bud += b; tot_dep += d
+        rows.append({'Classe':'TOTAL','Libellé':'','Budget (€)':tot_bud,'Dépenses (€)':tot_dep,
+                     'Écart (€)':tot_bud-tot_dep,'% Réalisé':round(tot_dep/tot_bud*100,1) if tot_bud>0 else 0})
+
+        anal_df = pd.DataFrame(rows)
+        st.dataframe(anal_df, use_container_width=True, hide_index=True,
             column_config={
-                "classe": st.column_config.TextColumn("Classe", width="small"),
-                "libelle_classe": st.column_config.TextColumn("Libellé", width="medium"),
-                "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%,.0f"),
-                "montant_depenses": st.column_config.NumberColumn("Dépenses (€)", format="%,.2f"),
-                "ecart": st.column_config.NumberColumn("Écart (€)", format="%,.2f"),
-                "pct": st.column_config.NumberColumn("% Réalisé", format="%.1f%%")
-            }
-        )
-        
-        # Export
+                "Budget (€)": st.column_config.NumberColumn(format="%,.0f"),
+                "Dépenses (€)": st.column_config.NumberColumn(format="%,.2f"),
+                "Écart (€)": st.column_config.NumberColumn(format="%,.2f"),
+                "% Réalisé": st.column_config.NumberColumn(format="%.1f%%"),
+            })
+
         st.divider()
-        csv = analyse_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Exporter l'analyse en CSV",
-            data=csv,
-            file_name=f"analyse_classe_{annee_analyse}.csv",
-            mime="text/csv"
-        )
-        
-        st.divider()
-        
-        # Graphiques existants
-        # Merge avec libellé compte pour les analyses suivantes
-        if not budget_annee.empty:
-            budget_unique = budget_annee.drop_duplicates(subset=['compte'], keep='first')[['compte', 'libelle_compte']]
-            depenses_annee = depenses_annee.merge(budget_unique, on='compte', how='left')
-        
-        st.subheader("📊 Top Fournisseurs")
-        if not depenses_annee.empty:
-            top_fournisseurs = depenses_annee.groupby('fournisseur')['montant_du'].agg(['sum', 'count']).reset_index()
-            top_fournisseurs.columns = ['Fournisseur', 'Total (€)', 'Nb factures']
-            top_fournisseurs = top_fournisseurs.sort_values('Total (€)', ascending=False).head(10)
-            
-            fig = px.bar(top_fournisseurs, x='Fournisseur', y='Total (€)', color='Nb factures')
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Budget vs Dépenses par Classe")
+            fig = go.Figure()
+            df_no_total = anal_df[anal_df['Classe'] != 'TOTAL']
+            fig.add_trace(go.Bar(name='Budget', x=df_no_total['Classe'], y=df_no_total['Budget (€)'], marker_color='lightblue'))
+            fig.add_trace(go.Bar(name='Dépenses', x=df_no_total['Classe'], y=df_no_total['Dépenses (€)'], marker_color='salmon'))
+            fig.update_layout(barmode='group')
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Aucune dépense pour cette année")
-        
-        st.subheader("💰 Dépenses par Classe")
-        if not depenses_annee.empty and 'classe' in depenses_annee.columns:
-            depenses_classe = depenses_annee.groupby('classe')['montant_du'].sum().reset_index()
-            fig = px.pie(depenses_classe, values='montant_du', names='classe',
-                        title=f'Répartition des dépenses {annee_analyse}')
+        with col2:
+            st.subheader("Top Fournisseurs")
+            if not dep_a.empty and 'fournisseur' in dep_a.columns:
+                top_f = dep_a.groupby('fournisseur')['montant_du'].agg(['sum','count']).reset_index()
+                top_f.columns = ['Fournisseur','Total (€)','Nb factures']
+                top_f = top_f.sort_values('Total (€)', ascending=False).head(10)
+                fig = px.bar(top_f, x='Fournisseur', y='Total (€)', color='Nb factures', text='Total (€)')
+                fig.update_traces(texttemplate='%{text:,.0f}€', textposition='outside')
+                fig.update_layout(xaxis_tickangle=45)
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader(f"📅 Évolution Mensuelle — {annee_a}")
+        if not dep_a.empty:
+            dep_a['mois'] = dep_a['date'].dt.to_period('M').astype(str)
+            ev = dep_a.groupby('mois')['montant_du'].sum().reset_index()
+            fig = px.area(ev, x='mois', y='montant_du', labels={'montant_du':'Montant (€)','mois':'Mois'},
+                title=f"Évolution mensuelle {annee_a}")
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Données de classe non disponibles")
-        
-        st.subheader("📅 Évolution Mensuelle")
-        if not depenses_annee.empty:
-            depenses_annee['mois'] = depenses_annee['date'].dt.to_period('M').astype(str)
-            evolution = depenses_annee.groupby('mois')['montant_du'].sum().reset_index()
-            fig = px.area(evolution, x='mois', y='montant_du',
-                         labels={'montant_du': 'Montant (€)', 'mois': 'Mois'},
-                         title=f'Évolution mensuelle {annee_analyse}')
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Aucune dépense pour cette année")
+
+        st.download_button("📥 Exporter l'analyse CSV",
+            anal_df.to_csv(index=False).encode('utf-8'), f"analyse_{annee_a}.csv", "text/csv")
     else:
-        if budget_df.empty:
-            st.warning("⚠️ Aucune donnée budgétaire disponible")
-        if depenses_df.empty:
-            st.info("ℹ️ Aucune dépense enregistrée")
+        st.warning("⚠️ Données insuffisantes pour les analyses")
 
 # ==================== PLAN COMPTABLE ====================
 elif menu == "📋 Plan Comptable":
     st.markdown("<h1 class='main-header'>📋 Plan Comptable</h1>", unsafe_allow_html=True)
-    
     plan_df = get_plan_comptable()
-    
+
     if not plan_df.empty:
-        # Statistiques
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Nombre de comptes", len(plan_df))
-        with col2:
-            if 'classe' in plan_df.columns:
-                st.metric("Nombre de classes", plan_df['classe'].nunique())
-            else:
-                st.metric("Classes", "N/A")
-        with col3:
-            if 'famille' in plan_df.columns:
-                st.metric("Nombre de familles", plan_df['famille'].nunique())
-            else:
-                st.metric("Familles", "N/A")
-        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Comptes", len(plan_df))
+        c2.metric("Classes", plan_df['classe'].nunique() if 'classe' in plan_df.columns else "N/A")
+        c3.metric("Familles", plan_df['famille'].nunique() if 'famille' in plan_df.columns else "N/A")
         st.divider()
-        
-        # Filtres
+
         col1, col2, col3 = st.columns(3)
-        
         with col1:
-            # Filtre par classe
-            if 'classe' in plan_df.columns:
-                classes = ['Toutes'] + sorted(plan_df['classe'].unique().tolist())
-                classe_filter = st.selectbox("Filtrer par classe", classes)
-            else:
-                classe_filter = 'Toutes'
-        
+            cl_f = st.selectbox("Classe", ['Toutes'] + sorted(plan_df['classe'].unique().tolist()))
         with col2:
-            # Filtre par famille
-            if 'famille' in plan_df.columns:
-                familles = ['Toutes'] + sorted(plan_df['famille'].unique().tolist())
-                famille_filter = st.selectbox("Filtrer par famille", familles)
-            else:
-                famille_filter = 'Toutes'
-        
+            fam_f = st.selectbox("Famille", ['Toutes'] + sorted(plan_df['famille'].unique().tolist()))
         with col3:
-            # Recherche
-            search = st.text_input("🔍 Rechercher", placeholder="Compte ou libellé...")
-        
-        # Application des filtres
-        filtered_df = plan_df.copy()
-        
-        if 'classe' in plan_df.columns and classe_filter != 'Toutes':
-            filtered_df = filtered_df[filtered_df['classe'] == classe_filter]
-        
-        if 'famille' in plan_df.columns and famille_filter != 'Toutes':
-            filtered_df = filtered_df[filtered_df['famille'] == famille_filter]
-        
+            search = st.text_input("🔍 Recherche")
+
+        filt = plan_df.copy()
+        if cl_f != 'Toutes': filt = filt[filt['classe'] == cl_f]
+        if fam_f != 'Toutes': filt = filt[filt['famille'] == fam_f]
         if search:
-            # Recherche dans le compte ou le libellé
-            mask = False
-            if 'compte' in filtered_df.columns:
-                mask = mask | filtered_df['compte'].astype(str).str.contains(search, case=False, na=False)
-            if 'libelle' in filtered_df.columns:
-                mask = mask | filtered_df['libelle'].astype(str).str.contains(search, case=False, na=False)
-            if 'libelle_compte' in filtered_df.columns:
-                mask = mask | filtered_df['libelle_compte'].astype(str).str.contains(search, case=False, na=False)
-            
-            if isinstance(mask, pd.Series):
-                filtered_df = filtered_df[mask]
-        
-        # Affichage
-        st.subheader(f"Plan comptable ({len(filtered_df)} comptes)")
-        
-        # Déterminer les colonnes à afficher
-        display_cols = []
-        if 'compte' in filtered_df.columns:
-            display_cols.append('compte')
-        if 'libelle_compte' in filtered_df.columns:
-            display_cols.append('libelle_compte')
-        elif 'libelle' in filtered_df.columns:
-            display_cols.append('libelle')
-        if 'classe' in filtered_df.columns:
-            display_cols.append('classe')
-        if 'famille' in filtered_df.columns:
-            display_cols.append('famille')
-        
-        # Configuration des colonnes
-        column_config = {}
-        if 'compte' in display_cols:
-            column_config['compte'] = st.column_config.NumberColumn("Compte", format="%d")
-        if 'libelle_compte' in display_cols:
-            column_config['libelle_compte'] = st.column_config.TextColumn("Libellé")
-        elif 'libelle' in display_cols:
-            column_config['libelle'] = st.column_config.TextColumn("Libellé")
-        if 'classe' in display_cols:
-            column_config['classe'] = st.column_config.TextColumn("Classe")
-        if 'famille' in display_cols:
-            column_config['famille'] = st.column_config.NumberColumn("Famille", format="%d")
-        
-        # Affichage du tableau
-        st.dataframe(
-            filtered_df[display_cols] if display_cols else filtered_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config
-        )
-        
-        # Graphiques
-        st.divider()
-        
+            mask = filt['compte'].astype(str).str.contains(search, case=False, na=False)
+            if 'libelle_compte' in filt.columns:
+                mask |= filt['libelle_compte'].astype(str).str.contains(search, case=False, na=False)
+            filt = filt[mask]
+
+        disp_cols = [c for c in ['compte','libelle_compte','classe','famille'] if c in filt.columns]
+        st.dataframe(filt[disp_cols].sort_values('compte' if 'compte' in filt.columns else disp_cols[0]),
+            use_container_width=True, hide_index=True)
+        st.download_button("📥 Exporter CSV",
+            filt.to_csv(index=False).encode('utf-8'),
+            f"plan_comptable_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+
         col1, col2 = st.columns(2)
-        
         with col1:
-            if 'famille' in filtered_df.columns:
-                st.subheader("Répartition par Famille")
-                famille_counts = filtered_df['famille'].value_counts().reset_index()
-                famille_counts.columns = ['Famille', 'Nombre de comptes']
-                fig = px.bar(famille_counts, x='Famille', y='Nombre de comptes', 
-                            text='Nombre de comptes',
-                            title='Nombre de comptes par famille')
-                fig.update_traces(textposition='outside')
+            if 'classe' in filt.columns:
+                cl_cnt = filt['classe'].value_counts().reset_index()
+                cl_cnt.columns = ['Classe','Nb comptes']
+                fig = px.bar(cl_cnt, x='Classe', y='Nb comptes', title='Comptes par classe', text='Nb comptes')
                 st.plotly_chart(fig, use_container_width=True)
-        
         with col2:
-            if 'classe' in filtered_df.columns:
-                st.subheader("Répartition par Classe")
-                classe_counts = filtered_df['classe'].value_counts().reset_index()
-                classe_counts.columns = ['Classe', 'Nombre de comptes']
-                fig = px.pie(classe_counts, values='Nombre de comptes', names='Classe',
-                            title='Distribution par classe')
-                fig.update_traces(textposition='inside', textinfo='percent+label')
+            if 'famille' in filt.columns:
+                fam_cnt = filt['famille'].value_counts().reset_index()
+                fam_cnt.columns = ['Famille','Nb comptes']
+                fig = px.pie(fam_cnt, values='Nb comptes', names='Famille', title='Comptes par famille')
                 st.plotly_chart(fig, use_container_width=True)
-        
-        # Export
-        st.divider()
-        
-        col1, col2, col3 = st.columns([1, 1, 2])
-        with col1:
-            csv = filtered_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Exporter en CSV",
-                data=csv,
-                file_name=f"plan_comptable_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
     else:
-        st.warning("⚠️ Aucune donnée dans le plan comptable. Vérifiez que la table 'plan_comptable' existe dans Supabase.")
+        st.warning("⚠️ Aucune donnée dans le plan comptable.")
 
 st.divider()
-st.markdown("<div style='text-align: center; color: #666;'>🏢 Gestion de Copropriété</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: #666;'>🏢 Gestion de Copropriété — v2.0</div>", unsafe_allow_html=True)
