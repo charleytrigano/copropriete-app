@@ -136,7 +136,7 @@ if menu == "📊 Tableau de Bord":
         depenses_df['annee'] = depenses_df['date'].dt.year
         depenses_df['montant_du'] = pd.to_numeric(depenses_df['montant_du'], errors='coerce')
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             annee_filter = st.selectbox("📅 Année", sorted(depenses_df['annee'].unique(), reverse=True), key="tdb_annee")
         with col2:
@@ -145,6 +145,9 @@ if menu == "📊 Tableau de Bord":
         with col3:
             comptes_dispo = ['Tous'] + sorted(depenses_df['compte'].dropna().unique().tolist())
             compte_filter = st.selectbox("🔢 Compte", comptes_dispo, key="tdb_compte")
+        with col4:
+            alur_taux_tdb = st.number_input("🏛️ Taux Alur (%)", min_value=5.0, max_value=20.0,
+                value=5.0, step=0.5, key="alur_taux_tdb")
 
         dep_f = depenses_df[depenses_df['annee'] == annee_filter].copy()
         if classe_filter != 'Toutes' and 'classe' in dep_f.columns:
@@ -158,49 +161,75 @@ if menu == "📊 Tableau de Bord":
         if compte_filter != 'Tous':
             bud_f = bud_f[bud_f['compte'] == compte_filter]
 
-        total_budget = bud_f['montant_budget'].sum()
-        total_dep = dep_f['montant_du'].sum()
-        ecart = total_budget - total_dep
-        pct = (total_dep / total_budget * 100) if total_budget > 0 else 0
+        # Alur toujours calculé sur le budget TOTAL de l'année (pas filtré)
+        bud_total_annee_tdb = float(budget_df[budget_df['annee'] == annee_filter]['montant_budget'].sum())
+        alur_tdb = round(bud_total_annee_tdb * alur_taux_tdb / 100, 2)
+
+        total_budget = float(bud_f['montant_budget'].sum())
+        total_dep = float(dep_f['montant_du'].sum())
+        total_a_appeler = bud_total_annee_tdb + alur_tdb
+        ecart = total_a_appeler - total_dep
+        pct = (total_dep / total_a_appeler * 100) if total_a_appeler > 0 else 0
 
         st.divider()
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Budget Total", f"{total_budget:,.0f} €")
-        c2.metric("Dépenses réelles", f"{total_dep:,.2f} €", delta=f"{pct:.1f}% du budget")
-        c3.metric("Écart budgétaire", f"{ecart:,.2f} €", delta_color="normal" if ecart >= 0 else "inverse")
-        c4.metric("Nb Dépenses", len(dep_f))
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Budget charges", f"{bud_total_annee_tdb:,.0f} €")
+        c2.metric(f"🏛️ Alur ({alur_taux_tdb:.0f}%)", f"{alur_tdb:,.0f} €")
+        c3.metric("💰 Total à appeler", f"{total_a_appeler:,.0f} €")
+        c4.metric("Dépenses réelles", f"{total_dep:,.2f} €")
+        c5.metric("Écart", f"{ecart:,.2f} €",
+            delta_color="normal" if ecart >= 0 else "inverse",
+            help="Total à appeler − Dépenses réelles")
+        c6.metric("% Réalisé", f"{pct:.1f}%")
+
+        st.info(f"🏛️ **Loi Alur** — {alur_tdb:,.0f} € /an "
+                f"({alur_taux_tdb:.0f}% × {bud_total_annee_tdb:,.0f} €) "
+                f"— soit **{alur_tdb/4:,.2f} €** par appel trimestriel")
         st.divider()
 
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("Budget vs Dépenses par Classe")
+            st.subheader("Budget + Alur vs Dépenses par Classe")
             if 'classe' in bud_f.columns and 'classe' in dep_f.columns:
                 bud_cl = bud_f.groupby('classe')['montant_budget'].sum().reset_index()
+                # Ajouter Alur comme classe distincte
+                alur_bar = pd.DataFrame([{'classe': f'Alur ({alur_taux_tdb:.0f}%)', 'montant_budget': alur_tdb}])
+                bud_cl_total = pd.concat([bud_cl, alur_bar], ignore_index=True)
                 dep_cl = dep_f.groupby('classe')['montant_du'].sum().reset_index()
-                comp = bud_cl.merge(dep_cl, on='classe', how='left').fillna(0)
-                comp.columns = ['Classe','Budget','Dépenses']
+                comp = bud_cl_total.merge(dep_cl, on='classe', how='left').fillna(0)
+                comp.columns = ['Classe', 'Budget', 'Dépenses']
                 fig = go.Figure()
-                fig.add_trace(go.Bar(name='Budget', x=comp['Classe'], y=comp['Budget'], marker_color='lightblue'))
-                fig.add_trace(go.Bar(name='Dépenses', x=comp['Classe'], y=comp['Dépenses'], marker_color='salmon'))
+                fig.add_trace(go.Bar(name='Budget + Alur', x=comp['Classe'], y=comp['Budget'], marker_color='lightblue'))
+                fig.add_trace(go.Bar(name='Dépenses réelles', x=comp['Classe'], y=comp['Dépenses'], marker_color='salmon'))
                 fig.update_layout(barmode='group', height=400)
                 st.plotly_chart(fig, use_container_width=True)
         with col2:
-            st.subheader("Répartition du Budget")
+            st.subheader("Répartition Budget + Alur")
             if 'classe' in bud_f.columns and not bud_f.empty:
                 bud_cl = bud_f.groupby('classe')['montant_budget'].sum().reset_index()
-                fig = px.pie(bud_cl, values='montant_budget', names='classe', title=f'Distribution budget {annee_filter}')
+                bud_cl_pie = pd.concat([bud_cl, pd.DataFrame([{
+                    'classe': f'Alur ({alur_taux_tdb:.0f}%)', 'montant_budget': alur_tdb
+                }])], ignore_index=True)
+                fig = px.pie(bud_cl_pie, values='montant_budget', names='classe',
+                    title=f'Distribution budget + Alur {annee_filter}')
                 fig.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader(f"Évolution Mensuelle - {annee_filter}")
+        st.subheader(f"Évolution Mensuelle — {annee_filter}")
         if not dep_f.empty:
             dep_f['mois'] = dep_f['date'].dt.to_period('M').astype(str)
             ev = dep_f.groupby('mois')['montant_du'].sum().reset_index()
-            fig = px.line(ev, x='mois', y='montant_du', markers=True, labels={'montant_du':'Montant (€)','mois':'Mois'})
-            fig.update_traces(line_color='#1f77b4', line_width=3)
+            # Ajouter ligne budget mensuel moyen
+            bud_mensuel = total_a_appeler / 12
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=ev['mois'], y=ev['montant_du'], mode='lines+markers',
+                name='Dépenses réelles', line=dict(color='#1f77b4', width=3)))
+            fig.add_hline(y=bud_mensuel, line_dash='dash', line_color='orange',
+                annotation_text=f"Moy. budget+Alur/mois ({bud_mensuel:,.0f} €)")
+            fig.update_layout(labels={'montant_du':'Montant (€)','mois':'Mois'})
             st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader(f"Top 10 Dépenses - {annee_filter}")
+        st.subheader(f"Top 10 Dépenses — {annee_filter}")
         if not dep_f.empty:
             top = dep_f.nlargest(10, 'montant_du')[['date','fournisseur','montant_du','commentaire']].copy()
             top['date'] = top['date'].dt.strftime('%d/%m/%Y')
