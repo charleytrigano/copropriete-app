@@ -506,7 +506,7 @@ elif menu == "📝 Dépenses":
         st.divider()
         c1, c2, c3, c4 = st.columns(4)
         total_dep = dep_f['montant_du'].sum()
-        bud_tot = budget_df[budget_df['annee'] == annee_dep]['montant_budget'].sum()
+        bud_tot = budget_df[budget_df['annee'] == annee_dep]['montant_budget'].sum() if not budget_df.empty and 'annee' in budget_df.columns else 0
         c1.metric("Nb dépenses", len(dep_f))
         c2.metric("Total", f"{total_dep:,.2f} €")
         c3.metric("Moyenne", f"{dep_f['montant_du'].mean():,.2f} €" if len(dep_f) > 0 else "0 €")
