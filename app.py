@@ -55,6 +55,20 @@ def get_plan_comptable():
     except Exception as e:
         st.error(f"❌ Erreur plan comptable: {e}"); return pd.DataFrame()
 
+def get_loi_alur():
+    try:
+        return pd.DataFrame(supabase.table('loi_alur').select('*').order('date').execute().data)
+    except Exception as e:
+        st.error(f"❌ Erreur loi_alur: {e}"); return pd.DataFrame()
+
+def get_depenses_alur_ids():
+    """Retourne les IDs des dépenses déjà affectées au fonds Alur."""
+    try:
+        res = supabase.table('loi_alur').select('depense_id').not_.is_('depense_id', 'null').execute()
+        return [r['depense_id'] for r in res.data if r.get('depense_id')]
+    except:
+        return []
+
 # ==================== CONFIGURATION CLÉS DE RÉPARTITION ====================
 # Basé sur votre plan comptable réel :
 # Classe 1A, 1B, 7 → Charges générales → tantième_general / 10 000
@@ -122,7 +136,7 @@ st.sidebar.image("https://img.icons8.com/color/96/000000/office-building.png", w
 st.sidebar.title("Navigation")
 menu = st.sidebar.radio("Choisir une section", [
     "📊 Tableau de Bord", "💰 Budget", "📝 Dépenses",
-    "👥 Copropriétaires", "🔄 Répartition", "📈 Analyses", "📋 Plan Comptable"
+    "👥 Copropriétaires", "🔄 Répartition", "🏛️ Loi Alur", "📈 Analyses", "📋 Plan Comptable"
 ])
 
 # ==================== TABLEAU DE BORD ====================
@@ -844,11 +858,22 @@ elif menu == "🔄 Répartition":
             depenses_df_reg['montant_du'] = pd.to_numeric(depenses_df_reg['montant_du'], errors='coerce')
             dep_reg = depenses_df_reg[depenses_df_reg['date'].dt.year == annee_reg].copy()
 
-            # Dépenses réelles par type (automatique via mapping classe)
+            # Exclure les dépenses affectées au fonds Alur
+            alur_ids_reg = get_depenses_alur_ids()
+            dep_reg_alur = dep_reg[dep_reg['id'].isin(alur_ids_reg)]
+            dep_reg_hors_alur = dep_reg[~dep_reg['id'].isin(alur_ids_reg)]
+            nb_alur_exclus = len(dep_reg_alur)
+            montant_alur_exclus = dep_reg_alur['montant_du'].sum()
+
+            if nb_alur_exclus > 0:
+                st.info(f"🏛️ **{nb_alur_exclus} dépense(s) affectée(s) au fonds Alur** exclues du calcul "
+                        f"({montant_alur_exclus:,.2f} € — financées par le fonds de travaux)")
+
+            # Dépenses réelles HORS Alur par type (automatique via mapping classe)
             reel_auto = {}
             for key, cfg in CHARGES_CONFIG.items():
-                if 'classe' in dep_reg.columns:
-                    reel_auto[key] = float(dep_reg[dep_reg['classe'].isin(cfg['classes'])]['montant_du'].sum())
+                if 'classe' in dep_reg_hors_alur.columns:
+                    reel_auto[key] = float(dep_reg_hors_alur[dep_reg_hors_alur['classe'].isin(cfg['classes'])]['montant_du'].sum())
                 else:
                     reel_auto[key] = 0
             total_reel_auto = sum(reel_auto.values())
@@ -1153,6 +1178,284 @@ elif menu == "🔄 Répartition":
             csv_glob, f"charges_{annee_glob}.csv", "text/csv")
 
 # ==================== ANALYSES ====================
+elif menu == "🏛️ Loi Alur":
+    st.markdown("<h1 class='main-header'>🏛️ Suivi Loi Alur — Fonds de Travaux</h1>", unsafe_allow_html=True)
+
+    alur_df = get_loi_alur()
+    depenses_df_alur = get_depenses()
+
+    # Préparer les dépenses
+    if not depenses_df_alur.empty:
+        depenses_df_alur['date'] = pd.to_datetime(depenses_df_alur['date'])
+        depenses_df_alur['montant_du'] = pd.to_numeric(depenses_df_alur['montant_du'], errors='coerce').fillna(0)
+
+    # IDs dépenses déjà affectées Alur
+    alur_depense_ids = get_depenses_alur_ids()
+
+    # ---- MÉTRIQUES GLOBALES ----
+    if not alur_df.empty:
+        alur_df['date'] = pd.to_datetime(alur_df['date'])
+        alur_df['appels_fonds'] = pd.to_numeric(alur_df.get('appels_fonds', 0), errors='coerce').fillna(0)
+        alur_df['utilisation'] = pd.to_numeric(alur_df.get('utilisation', 0), errors='coerce').fillna(0)
+        total_appels = alur_df['appels_fonds'].sum()
+        total_util = alur_df['utilisation'].sum()
+        solde = total_appels - total_util
+    else:
+        total_appels = total_util = solde = 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("💰 Total appelé", f"{total_appels:,.2f} €")
+    c2.metric("🔧 Total utilisé", f"{total_util:,.2f} €")
+    c3.metric("📊 Solde disponible", f"{solde:,.2f} €",
+        delta_color="normal" if solde >= 0 else "inverse")
+    c4.metric("Nb opérations", len(alur_df) if not alur_df.empty else 0)
+
+    st.divider()
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Grand Livre", "➕ Ajouter opération", "🔗 Affecter dépenses", "📊 Analyse"
+    ])
+
+    # ---- ONGLET 1 : GRAND LIVRE ----
+    with tab1:
+        st.subheader("Grand Livre du Fonds de Travaux")
+        if alur_df.empty:
+            st.info("💡 Aucune opération. Commencez par ajouter un 'À nouveau' ou un appel de fonds.")
+        else:
+            # Calcul du solde cumulé
+            alur_display = alur_df.copy().sort_values('date')
+            alur_display['Solde cumulé (€)'] = (alur_display['appels_fonds'] - alur_display['utilisation']).cumsum().round(2)
+            alur_display['date_fmt'] = alur_display['date'].dt.strftime('%d/%m/%Y')
+
+            # Colorisation
+            def style_row(row):
+                if row['appels_fonds'] > 0:
+                    return ['background-color: rgba(46,204,113,0.1)'] * len(row)
+                elif row['utilisation'] > 0:
+                    return ['background-color: rgba(231,76,60,0.1)'] * len(row)
+                return [''] * len(row)
+
+            cols_display = ['date_fmt','designation','appels_fonds','utilisation','commentaire','Solde cumulé (€)']
+            cols_display = [c for c in cols_display if c in alur_display.columns]
+            st.dataframe(
+                alur_display[cols_display].rename(columns={
+                    'date_fmt': 'Date', 'designation': 'Désignation',
+                    'appels_fonds': 'Appels (€)', 'utilisation': 'Utilisation (€)',
+                    'commentaire': 'Commentaire'
+                }),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    'Appels (€)': st.column_config.NumberColumn(format="%,.2f"),
+                    'Utilisation (€)': st.column_config.NumberColumn(format="%,.2f"),
+                    'Solde cumulé (€)': st.column_config.NumberColumn(format="%,.2f"),
+                }
+            )
+
+            # Graphique solde cumulé
+            fig = go.Figure()
+            fig.add_trace(go.Bar(name='Appels', x=alur_display['date_fmt'],
+                y=alur_display['appels_fonds'], marker_color='#2ecc71'))
+            fig.add_trace(go.Bar(name='Utilisation', x=alur_display['date_fmt'],
+                y=-alur_display['utilisation'], marker_color='#e74c3c'))
+            fig.add_trace(go.Scatter(name='Solde cumulé', x=alur_display['date_fmt'],
+                y=alur_display['Solde cumulé (€)'], mode='lines+markers',
+                line=dict(color='orange', width=3), yaxis='y'))
+            fig.update_layout(barmode='relative', title="Évolution du fonds de travaux",
+                yaxis_title='Montant (€)', height=400)
+            st.plotly_chart(fig, use_container_width=True)
+
+            csv_alur = alur_display.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+            st.download_button("📥 Exporter Grand Livre CSV", csv_alur, "grand_livre_alur.csv", "text/csv")
+
+    # ---- ONGLET 2 : AJOUTER OPÉRATION ----
+    with tab2:
+        st.subheader("Ajouter une opération au fonds")
+        type_op = st.radio("Type d'opération",
+            ["💰 Appel de fonds", "🔧 Utilisation / Dépense", "📋 À nouveau"],
+            horizontal=True, key="alur_type_op")
+
+        with st.form("form_alur"):
+            col1, col2 = st.columns(2)
+            with col1:
+                op_date = st.date_input("Date *", value=datetime.now())
+                op_desig = st.text_input("Désignation *",
+                    placeholder="Ex: Appel de fonds T1 2026, Travaux toiture...")
+            with col2:
+                if type_op == "💰 Appel de fonds":
+                    op_appel = st.number_input("Montant appelé (€) *", min_value=0.0, step=100.0, format="%.2f")
+                    op_util = 0.0
+                elif type_op == "🔧 Utilisation / Dépense":
+                    op_appel = 0.0
+                    op_util = st.number_input("Montant utilisé (€) *", min_value=0.0, step=100.0, format="%.2f")
+                else:  # À nouveau
+                    op_appel = st.number_input("Solde reporté (€) *", min_value=0.0, step=100.0, format="%.2f")
+                    op_util = 0.0
+                op_comment = st.text_area("Commentaire")
+
+            if st.form_submit_button("✨ Enregistrer", type="primary", use_container_width=True):
+                if op_desig and (op_appel > 0 or op_util > 0):
+                    try:
+                        supabase.table('loi_alur').insert({
+                            'date': op_date.strftime('%Y-%m-%d'),
+                            'designation': op_desig.strip(),
+                            'appels_fonds': float(op_appel) if op_appel > 0 else None,
+                            'utilisation': float(op_util) if op_util > 0 else None,
+                            'commentaire': op_comment.strip() if op_comment else None,
+                            'depense_id': None
+                        }).execute()
+                        st.success("✅ Opération enregistrée!"); st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+                else:
+                    st.error("❌ Remplissez tous les champs obligatoires")
+
+        # Suppression
+        st.divider()
+        st.subheader("🗑️ Supprimer une opération")
+        if not alur_df.empty:
+            alur_no_dep = alur_df[alur_df.get('depense_id', pd.Series([None]*len(alur_df))).isna()]
+            if not alur_no_dep.empty:
+                ids_del = st.multiselect("Sélectionner",
+                    options=alur_no_dep['id'].tolist(),
+                    format_func=lambda x: f"{alur_no_dep[alur_no_dep['id']==x]['date'].dt.strftime('%d/%m/%Y').values[0]} — {alur_no_dep[alur_no_dep['id']==x]['designation'].values[0]}")
+                if ids_del and st.button("🗑️ Supprimer", type="secondary"):
+                    for i in ids_del: supabase.table('loi_alur').delete().eq('id', i).execute()
+                    st.success(f"✅ {len(ids_del)} supprimé(s)"); st.rerun()
+
+    # ---- ONGLET 3 : AFFECTER DÉPENSES ----
+    with tab3:
+        st.subheader("🔗 Affecter des dépenses au fonds Alur")
+        st.info("""
+        Certaines dépenses de la table **Dépenses** peuvent être financées par le fonds de travaux Alur.
+        En les affectant ici, elles seront **exclues du 5ème appel de charges courantes**
+        et comptabilisées dans le fonds Alur.
+        """)
+
+        if depenses_df_alur.empty:
+            st.warning("⚠️ Aucune dépense disponible.")
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                annee_aff = st.selectbox("📅 Année", sorted(depenses_df_alur['date'].dt.year.unique(), reverse=True), key="alur_aff_annee")
+            with col2:
+                show_already = st.checkbox("Afficher les dépenses déjà affectées", value=False)
+
+            dep_annee = depenses_df_alur[depenses_df_alur['date'].dt.year == annee_aff].copy()
+
+            # Marquer les dépenses déjà affectées
+            dep_annee['alur'] = dep_annee['id'].isin(alur_depense_ids)
+
+            if not show_already:
+                dep_non_affectees = dep_annee[~dep_annee['alur']]
+            else:
+                dep_non_affectees = dep_annee
+
+            st.write(f"**{len(dep_annee[~dep_annee['alur']])}** dépenses non affectées | "
+                     f"**{len(dep_annee[dep_annee['alur']])}** déjà affectées au fonds Alur")
+
+            if not dep_non_affectees.empty:
+                ids_select = st.multiselect(
+                    "Sélectionner les dépenses à affecter au fonds Alur",
+                    options=dep_non_affectees[~dep_non_affectees['alur']]['id'].tolist() if not show_already else [],
+                    format_func=lambda x: (
+                        f"{dep_non_affectees[dep_non_affectees['id']==x]['date'].dt.strftime('%d/%m/%Y').values[0]} — "
+                        f"{dep_non_affectees[dep_non_affectees['id']==x]['fournisseur'].values[0]} — "
+                        f"{dep_non_affectees[dep_non_affectees['id']==x]['montant_du'].values[0]:,.2f} €"
+                    ),
+                    key="alur_dep_select"
+                )
+
+                # Tableau récapitulatif
+                disp_dep = dep_non_affectees[['date','compte','fournisseur','montant_du','classe','commentaire']].copy()
+                disp_dep['date'] = disp_dep['date'].dt.strftime('%d/%m/%Y')
+                disp_dep['Alur'] = dep_non_affectees['alur'].map({True: '✅ Affectée', False: '—'})
+                st.dataframe(disp_dep, use_container_width=True, hide_index=True,
+                    column_config={"montant_du": st.column_config.NumberColumn("Montant (€)", format="%,.2f")})
+
+                if ids_select:
+                    total_sel = dep_non_affectees[dep_non_affectees['id'].isin(ids_select)]['montant_du'].sum()
+                    st.info(f"**{len(ids_select)}** dépense(s) sélectionnée(s) — Total : **{total_sel:,.2f} €**")
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        desig_alur = st.text_input("Désignation dans le fonds Alur",
+                            value=f"Dépenses affectées Alur {annee_aff}", key="alur_desig_aff")
+                    with col2:
+                        comment_alur = st.text_area("Commentaire", key="alur_comment_aff")
+
+                    if st.button("🔗 Affecter au fonds Alur", type="primary"):
+                        try:
+                            for dep_id in ids_select:
+                                dep_row = dep_non_affectees[dep_non_affectees['id'] == dep_id].iloc[0]
+                                supabase.table('loi_alur').insert({
+                                    'date': dep_row['date'].strftime('%Y-%m-%d') if hasattr(dep_row['date'], 'strftime') else str(dep_row['date']),
+                                    'designation': f"{dep_row['fournisseur']} — {dep_row.get('commentaire','') or desig_alur}",
+                                    'appels_fonds': None,
+                                    'utilisation': float(dep_row['montant_du']),
+                                    'commentaire': comment_alur.strip() if comment_alur else None,
+                                    'depense_id': int(dep_id)
+                                }).execute()
+                            st.success(f"✅ {len(ids_select)} dépense(s) affectée(s) au fonds Alur!"); st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ {e}")
+
+            # Désaffecter
+            st.divider()
+            st.subheader("↩️ Désaffecter des dépenses")
+            dep_affectees = dep_annee[dep_annee['alur']]
+            if not dep_affectees.empty:
+                ids_desaff = st.multiselect("Dépenses à désaffecter",
+                    options=dep_affectees['id'].tolist(),
+                    format_func=lambda x: (
+                        f"{dep_affectees[dep_affectees['id']==x]['date'].dt.strftime('%d/%m/%Y').values[0]} — "
+                        f"{dep_affectees[dep_affectees['id']==x]['fournisseur'].values[0]} — "
+                        f"{dep_affectees[dep_affectees['id']==x]['montant_du'].values[0]:,.2f} €"
+                    ), key="alur_desaff")
+                if ids_desaff and st.button("↩️ Désaffecter", type="secondary"):
+                    try:
+                        for dep_id in ids_desaff:
+                            supabase.table('loi_alur').delete().eq('depense_id', dep_id).execute()
+                        st.success(f"✅ {len(ids_desaff)} dépense(s) désaffectée(s)"); st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+            else:
+                st.info("Aucune dépense affectée pour cette année.")
+
+    # ---- ONGLET 4 : ANALYSE ----
+    with tab4:
+        st.subheader("📊 Analyse du fonds de travaux")
+        if alur_df.empty:
+            st.info("Aucune donnée disponible.")
+        else:
+            alur_an = alur_df.copy()
+            alur_an['annee'] = alur_an['date'].dt.year
+            by_year = alur_an.groupby('annee').agg(
+                appels=('appels_fonds','sum'), util=('utilisation','sum')
+            ).reset_index()
+            by_year['solde'] = by_year['appels'] - by_year['util']
+
+            col1, col2 = st.columns(2)
+            with col1:
+                fig = go.Figure()
+                fig.add_trace(go.Bar(name='Appels', x=by_year['annee'].astype(str), y=by_year['appels'], marker_color='#2ecc71'))
+                fig.add_trace(go.Bar(name='Utilisation', x=by_year['annee'].astype(str), y=by_year['util'], marker_color='#e74c3c'))
+                fig.update_layout(barmode='group', title='Appels vs Utilisation par année')
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                fig = px.bar(by_year, x='annee', y='solde', title='Solde net par année',
+                    color='solde', color_continuous_scale=['red','green'],
+                    text='solde', labels={'solde':'Solde (€)', 'annee':'Année'})
+                fig.update_traces(texttemplate='%{text:,.0f}€', textposition='outside')
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.subheader("Impact sur le 5ème appel")
+            total_dep_alur = alur_df[alur_df.get('depense_id', pd.Series([None]*len(alur_df))).notna()]['utilisation'].sum()
+            if total_dep_alur > 0:
+                st.success(f"✅ **{total_dep_alur:,.2f} €** de dépenses affectées au fonds Alur "
+                           f"sont exclues du 5ème appel de charges courantes.")
+            else:
+                st.info("Aucune dépense n'est encore affectée au fonds Alur.")
+
 elif menu == "📈 Analyses":
     st.markdown("<h1 class='main-header'>📈 Analyses Avancées</h1>", unsafe_allow_html=True)
     depenses_df = get_depenses()
