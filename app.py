@@ -226,7 +226,7 @@ if menu == "📊 Tableau de Bord":
                 name='Dépenses réelles', line=dict(color='#1f77b4', width=3)))
             fig.add_hline(y=bud_mensuel, line_dash='dash', line_color='orange',
                 annotation_text=f"Moy. budget+Alur/mois ({bud_mensuel:,.0f} €)")
-            fig.update_layout(labels={'montant_du':'Montant (€)','mois':'Mois'})
+            fig.update_layout(xaxis_title='Mois', yaxis_title='Montant (€)')
             st.plotly_chart(fig, use_container_width=True)
 
         st.subheader(f"Top 10 Dépenses — {annee_filter}")
