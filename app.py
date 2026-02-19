@@ -1006,8 +1006,8 @@ elif menu == "📝 Dépenses":
             cpt_bud = budget_df[budget_df['compte'].astype(str) == str(new_cpt)] if new_cpt and not budget_df.empty else pd.DataFrame()
             if not cpt_bud.empty:
                 st.success(f"✅ {cpt_bud.iloc[0]['libelle_compte']} — Classe {cpt_bud.iloc[0]['classe']}")
-                auto_classe = cpt_bud.iloc[0]['classe']
-                auto_famille = cpt_bud.iloc[0]['famille']
+                auto_classe = str(cpt_bud.iloc[0]['classe'])
+                auto_famille = str(cpt_bud.iloc[0]['famille'])
             else:
                 auto_classe = None; auto_famille = None
                 if new_cpt: st.warning("⚠️ Compte non trouvé dans le budget")
