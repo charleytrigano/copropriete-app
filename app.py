@@ -610,23 +610,45 @@ if menu == "📊 Tableau de Bord":
         total_budget = float(bud_f['montant_budget'].sum())
         total_dep = float(dep_f['montant_du'].sum())
         total_a_appeler = bud_total_annee_tdb + alur_tdb
-        ecart = total_a_appeler - total_dep
-        pct = (total_dep / total_a_appeler * 100) if total_a_appeler > 0 else 0
+
+        # Travaux votés : montant des dépenses affectées (diminution des charges courantes)
+        tv_ids_tdb = get_travaux_votes_depense_ids()
+        dep_tv_tdb = dep_f[dep_f['id'].isin(tv_ids_tdb)] if not dep_f.empty and tv_ids_tdb else pd.DataFrame()
+        montant_tv_tdb = float(dep_tv_tdb['montant_du'].sum()) if not dep_tv_tdb.empty else 0
+
+        # Dépenses courantes nettes = total − travaux votés
+        total_dep_net = total_dep - montant_tv_tdb
+
+        ecart = total_a_appeler - total_dep_net
+        pct = (total_dep_net / total_a_appeler * 100) if total_a_appeler > 0 else 0
 
         st.divider()
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         c1.metric("Budget charges", f"{bud_total_annee_tdb:,.0f} €")
         c2.metric(f"🏛️ Alur ({alur_taux_tdb:.0f}%)", f"{alur_tdb:,.0f} €")
         c3.metric("💰 Total à appeler", f"{total_a_appeler:,.0f} €")
         c4.metric("Dépenses réelles", f"{total_dep:,.2f} €")
-        c5.metric("Écart", f"{ecart:,.2f} €",
-            delta_color="normal" if ecart >= 0 else "inverse",
-            help="Total à appeler − Dépenses réelles")
-        c6.metric("% Réalisé", f"{pct:.1f}%")
+        if montant_tv_tdb > 0:
+            c5.metric("🏗️ — Travaux votés", f"-{montant_tv_tdb:,.2f} €",
+                help="Dépenses affectées aux travaux votés en AG — déduites des charges courantes")
+            c6.metric("Dépenses nettes", f"{total_dep_net:,.2f} €",
+                help="Dépenses réelles − Travaux votés")
+            c7.metric("Écart", f"{ecart:,.2f} €",
+                delta_color="normal" if ecart >= 0 else "inverse",
+                help="Total à appeler − Dépenses nettes")
+        else:
+            c5.metric("Écart", f"{ecart:,.2f} €",
+                delta_color="normal" if ecart >= 0 else "inverse",
+                help="Total à appeler − Dépenses réelles")
+            c6.metric("% Réalisé", f"{pct:.1f}%")
 
-        st.info(f"🏛️ **Loi Alur** — {alur_tdb:,.0f} € /an "
-                f"({alur_taux_tdb:.0f}% × {bud_total_annee_tdb:,.0f} €) "
-                f"— soit **{alur_tdb/4:,.2f} €** par appel trimestriel")
+        # Bandeau info
+        info_parts = [f"🏛️ **Loi Alur** — {alur_tdb:,.0f} € /an "
+                      f"({alur_taux_tdb:.0f}% × {bud_total_annee_tdb:,.0f} €) "
+                      f"— soit **{alur_tdb/4:,.2f} €** par appel trimestriel"]
+        if montant_tv_tdb > 0:
+            info_parts.append(f"🏗️ **Travaux votés** — {montant_tv_tdb:,.2f} € déduits des charges courantes")
+        st.info("   |   ".join(info_parts))
         st.divider()
 
         col1, col2 = st.columns(2)
