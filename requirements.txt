@@ -1,6 +1,5 @@
 streamlit
+supabase
 pandas
 plotly
-supabase
-openpyxl
-python-dateutil
+reportlab
