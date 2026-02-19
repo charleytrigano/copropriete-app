@@ -2557,7 +2557,7 @@ elif menu == "📋 Plan Comptable":
                 classes_del = sorted(plan_df['classe'].dropna().unique().tolist())
                 cl_del = st.selectbox("Classe à supprimer", classes_del, key="cl_del_sel")
                 nb_cl_del = len(plan_df[plan_df['classe'] == cl_del])
-                comptes_cl = plan_df[plan_df['classe'] == cl_del]['compte'].tolist()
+                comptes_cl = plan_df[plan_df['classe'] == cl_del]['compte'].astype(str).tolist()
                 st.warning(f"⚠️ Supprimer la classe **{cl_del}** et ses **{nb_cl_del} comptes** : "
                            f"{', '.join(comptes_cl[:8])}{'...' if len(comptes_cl) > 8 else ''} ?")
                 col1, col2 = st.columns(2)
@@ -2579,7 +2579,7 @@ elif menu == "📋 Plan Comptable":
                 familles_del = sorted(plan_df['famille'].dropna().unique().tolist())
                 fam_del = st.selectbox("Famille à supprimer", familles_del, key="fam_del_sel")
                 nb_fam_del = len(plan_df[plan_df['famille'] == fam_del])
-                comptes_fam = plan_df[plan_df['famille'] == fam_del]['compte'].tolist()
+                comptes_fam = plan_df[plan_df['famille'] == fam_del]['compte'].astype(str).tolist()
                 st.warning(f"⚠️ Supprimer la famille **{fam_del}** et ses **{nb_fam_del} comptes** : "
                            f"{', '.join(comptes_fam[:8])}{'...' if len(comptes_fam) > 8 else ''} ?")
                 col1, col2 = st.columns(2)
