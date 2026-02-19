@@ -734,57 +734,68 @@ elif menu == "📝 Dépenses":
                 if dep_non_tv.empty:
                     st.info("Toutes les dépenses de cette année sont déjà transférées.")
                 else:
-                    # Champ objet pour grouper le transfert
-                    tv_objet_tr = st.text_input("Objet / Chantier *",
-                        placeholder="Ex: Ravalement façade 2025", key="tv_objet_tr")
-                    tv_ag_tr = st.text_input("AG de vote", placeholder="Ex: AG du 15/03/2024", key="tv_ag_tr")
+                    # Champ objet / AG en haut
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        tv_objet_tr = st.text_input("Objet / Chantier *",
+                            placeholder="Ex: Ravalement façade 2025", key="tv_objet_tr")
+                    with col2:
+                        tv_ag_tr = st.text_input("AG de vote",
+                            placeholder="Ex: AG du 15/03/2024", key="tv_ag_tr")
 
-                    ids_tv_sel = st.multiselect(
-                        "Sélectionner les factures à transférer",
-                        options=dep_non_tv['id'].tolist(),
-                        format_func=lambda x: (
-                            f"{dep_non_tv[dep_non_tv['id']==x]['date'].dt.strftime('%d/%m/%Y').values[0]} — "
-                            f"{dep_non_tv[dep_non_tv['id']==x]['fournisseur'].values[0]} — "
-                            f"{dep_non_tv[dep_non_tv['id']==x]['montant_du'].values[0]:,.2f} €"
-                        ),
-                        key="tv_dep_select"
+                    st.caption("✅ Cochez les factures à transférer puis cliquez sur le bouton.")
+
+                    # Tableau éditable avec case à cocher — c'est la SEULE façon d'avoir des cases interactives
+                    dep_editor = dep_non_tv[['id','date','fournisseur','montant_du','classe','commentaire']].copy()
+                    dep_editor['date'] = dep_editor['date'].dt.strftime('%d/%m/%Y')
+                    dep_editor['compte'] = dep_non_tv['compte'].astype(str).fillna('') if 'compte' in dep_non_tv.columns else ''
+                    dep_editor['fournisseur'] = dep_editor['fournisseur'].astype(str).fillna('')
+                    dep_editor['commentaire'] = dep_editor['commentaire'].astype(str).fillna('').replace('None','')
+                    dep_editor['montant_du'] = pd.to_numeric(dep_editor['montant_du'], errors='coerce').fillna(0.0)
+                    dep_editor['✓ Transférer'] = False  # case à cocher initiale
+
+                    edited_tv = st.data_editor(
+                        dep_editor[['✓ Transférer','date','fournisseur','compte','montant_du','classe','commentaire']],
+                        use_container_width=True, hide_index=True,
+                        disabled=['date','fournisseur','compte','montant_du','classe','commentaire'],
+                        column_config={
+                            '✓ Transférer': st.column_config.CheckboxColumn("✓", help="Cocher pour transférer"),
+                            'montant_du': st.column_config.NumberColumn("Montant (€)", format="%,.2f"),
+                            'date': st.column_config.TextColumn("Date"),
+                            'fournisseur': st.column_config.TextColumn("Fournisseur"),
+                            'compte': st.column_config.TextColumn("Compte"),
+                            'classe': st.column_config.TextColumn("Classe"),
+                            'commentaire': st.column_config.TextColumn("Commentaire"),
+                        }, key="tv_dep_editor"
                     )
 
-                    # Aperçu tableau
-                    if dep_non_tv is not None and not dep_non_tv.empty:
-                        dep_preview = dep_non_tv[['date','fournisseur','montant_du','classe','commentaire']].copy()
-                        dep_preview['date'] = dep_preview['date'].dt.strftime('%d/%m/%Y')
-                        dep_preview['Sélectionné'] = dep_non_tv['id'].isin(ids_tv_sel).values
-                        st.dataframe(dep_preview, use_container_width=True, hide_index=True,
-                            column_config={
-                                "montant_du": st.column_config.NumberColumn("Montant (€)", format="%,.2f"),
-                                "Sélectionné": st.column_config.CheckboxColumn("✓")
-                            })
+                    # Récupérer les IDs cochés
+                    ids_tv_sel = dep_non_tv['id'].values[edited_tv['✓ Transférer'].values]
 
-                    if ids_tv_sel:
+                    if len(ids_tv_sel) > 0:
                         total_sel_tv = dep_non_tv[dep_non_tv['id'].isin(ids_tv_sel)]['montant_du'].sum()
-                        st.info(f"**{len(ids_tv_sel)}** facture(s) — **{total_sel_tv:,.2f} €**")
+                        st.info(f"**{len(ids_tv_sel)}** facture(s) sélectionnée(s) — **{total_sel_tv:,.2f} €**")
 
-                        if st.button("🔗 Transférer en Travaux Votés", type="primary",
-                                     disabled=not tv_objet_tr):
-                            if not tv_objet_tr:
-                                st.error("❌ Saisissez l'objet du chantier")
-                            else:
-                                try:
-                                    for dep_id in ids_tv_sel:
-                                        dep_row = dep_non_tv[dep_non_tv['id'] == dep_id].iloc[0]
-                                        supabase.table('travaux_votes').insert({
-                                            'date': dep_row['date'].strftime('%Y-%m-%d'),
-                                            'objet': tv_objet_tr.strip(),
-                                            'fournisseur': dep_row['fournisseur'],
-                                            'montant': float(dep_row['montant_du']),
-                                            'ag_vote': tv_ag_tr.strip() if tv_ag_tr else None,
-                                            'commentaire': str(dep_row.get('commentaire','') or ''),
-                                            'depense_id': int(dep_id)
-                                        }).execute()
-                                    st.success(f"✅ {len(ids_tv_sel)} facture(s) transférée(s)!"); st.rerun()
-                                except Exception as e:
-                                    st.error(f"❌ {e}")
+                    if st.button("🔗 Transférer en Travaux Votés", type="primary",
+                                 disabled=(len(ids_tv_sel) == 0)):
+                        if not tv_objet_tr:
+                            st.error("❌ Saisissez l'objet du chantier")
+                        else:
+                            try:
+                                for dep_id in ids_tv_sel:
+                                    dep_row = dep_non_tv[dep_non_tv['id'] == dep_id].iloc[0]
+                                    supabase.table('travaux_votes').insert({
+                                        'date': dep_row['date'].strftime('%Y-%m-%d'),
+                                        'objet': tv_objet_tr.strip(),
+                                        'fournisseur': dep_row['fournisseur'],
+                                        'montant': float(dep_row['montant_du']),
+                                        'ag_vote': tv_ag_tr.strip() if tv_ag_tr else None,
+                                        'commentaire': str(dep_row.get('commentaire','') or ''),
+                                        'depense_id': int(dep_id)
+                                    }).execute()
+                                st.success(f"✅ {len(ids_tv_sel)} facture(s) transférée(s)!"); st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
 
                 # Retransférer (annuler un transfert)
                 if not dep_deja_tv.empty:
