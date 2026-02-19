@@ -215,7 +215,7 @@ elif menu == "💰 Budget":
     budget_df = get_budget()
 
     if not budget_df.empty:
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             annees = sorted(budget_df['annee'].unique(), reverse=True)
             annee_filter = st.selectbox("📅 Année", annees, key="budget_annee")
@@ -223,74 +223,80 @@ elif menu == "💰 Budget":
             classe_filter = st.multiselect("🏷️ Classe", options=sorted(budget_df['classe'].unique()))
         with col3:
             famille_filter = st.multiselect("📂 Famille", options=sorted(budget_df['famille'].unique()))
+        with col4:
+            alur_taux_bud = st.number_input("🏛️ Taux Alur (%)", min_value=5.0, max_value=20.0,
+                value=5.0, step=0.5, key="alur_taux_bud",
+                help="Minimum légal = 5% du budget voté en AG (loi Alur art. 14-2)")
 
         filt = budget_df[budget_df['annee'] == annee_filter].copy()
         if classe_filter: filt = filt[filt['classe'].isin(classe_filter)]
         if famille_filter: filt = filt[filt['famille'].isin(famille_filter)]
+        bud_total_annee = float(budget_df[budget_df['annee'] == annee_filter]['montant_budget'].sum())
+        alur_annuel_bud = round(bud_total_annee * alur_taux_bud / 100, 2)
 
         st.divider()
-        bud_act = filt['montant_budget'].sum()
-        alur_bud = round(budget_df[budget_df['annee'] == annee_filter]['montant_budget'].sum() * 0.05, 2)
-        bud_prec = budget_df[budget_df['annee'] == annee_filter - 1]['montant_budget'].sum()
-
+        bud_prec = float(budget_df[budget_df['annee'] == annee_filter - 1]['montant_budget'].sum())
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Postes", len(filt))
-        c2.metric("Budget charges", f"{bud_act:,.0f} €")
-        c3.metric("🏛️ Alur (5%)", f"{alur_bud:,.0f} €",
-            help="Fonds de travaux loi Alur = 5% du budget total voté en AG")
-        c4.metric("💰 Budget total + Alur", f"{bud_act + alur_bud:,.0f} €")
+        c1.metric("Postes budgétaires", len(filt))
+        c2.metric("Budget charges", f"{bud_total_annee:,.0f} €")
+        c3.metric(f"🏛️ Alur ({alur_taux_bud:.0f}%)", f"{alur_annuel_bud:,.0f} €",
+            help=f"{alur_taux_bud}% × {bud_total_annee:,.0f} € = fonds de travaux obligatoire")
+        c4.metric("💰 TOTAL à appeler", f"{bud_total_annee + alur_annuel_bud:,.0f} €")
         if bud_prec > 0:
-            c5.metric("vs N-1", f"{(bud_act-bud_prec)/bud_prec*100:+.1f}%", delta=f"{bud_act-bud_prec:,.0f} €")
+            c5.metric("vs N-1", f"{(bud_total_annee - bud_prec) / bud_prec * 100:+.1f}%",
+                delta=f"{bud_total_annee - bud_prec:+,.0f} €")
         else:
             c5.metric("vs N-1", "N/A")
+
+        # Bloc Alur détaillé
+        st.info(f"🏛️ **Loi Alur** — Fonds de travaux : **{alur_annuel_bud:,.0f} €/an** "
+                f"({alur_taux_bud:.0f}% × {bud_total_annee:,.0f} €) "
+                f"— soit **{alur_annuel_bud/4:,.2f} €/trimestre** par appel de fonds")
         st.divider()
 
         tab1, tab2, tab3 = st.tabs(["📋 Consulter", "✏️ Modifier / Ajouter / Supprimer", "➕ Créer Budget Année"])
 
         with tab1:
-            total_charges = filt['montant_budget'].sum()
-            alur_tab = round(budget_df[budget_df['annee'] == annee_filter]['montant_budget'].sum() * 0.05, 2)
             st.subheader(f"Budget {annee_filter} — {len(filt)} postes")
 
-            # Tableau budget + ligne Alur
+            # Tableau avec ligne Alur et total — utilise alur_annuel_bud/bud_total_annee déjà calculés
             filt_display = filt[['compte','libelle_compte','montant_budget','classe','famille']].sort_values('compte').copy()
-            # Ajouter la ligne Alur au tableau
-            alur_row = pd.DataFrame([{
-                'compte': '—',
-                'libelle_compte': '🏛️ FONDS DE TRAVAUX — Loi Alur (5%)',
-                'montant_budget': alur_tab,
-                'classe': '—',
-                'famille': '—'
-            }])
-            filt_display = pd.concat([filt_display, alur_row], ignore_index=True)
-            # Ligne total
-            total_row = pd.DataFrame([{
-                'compte': '=',
-                'libelle_compte': '💰 TOTAL BUDGET + ALUR',
-                'montant_budget': total_charges + alur_tab,
-                'classe': '=',
-                'famille': '='
-            }])
-            filt_display = pd.concat([filt_display, total_row], ignore_index=True)
+            filt_display = pd.concat([filt_display, pd.DataFrame([
+                {'compte': 'ALUR', 'libelle_compte': f'🏛️ FONDS DE TRAVAUX — Loi Alur ({alur_taux_bud:.0f}%)',
+                 'montant_budget': alur_annuel_bud, 'classe': '—', 'famille': '—'},
+                {'compte': 'TOTAL', 'libelle_compte': '💰 TOTAL BUDGET + ALUR',
+                 'montant_budget': bud_total_annee + alur_annuel_bud, 'classe': '—', 'famille': '—'}
+            ])], ignore_index=True)
 
-            st.dataframe(filt_display,
-                use_container_width=True, hide_index=True,
+            st.dataframe(filt_display, use_container_width=True, hide_index=True,
                 column_config={
                     "compte": st.column_config.TextColumn("Compte"),
+                    "libelle_compte": st.column_config.TextColumn("Libellé"),
                     "montant_budget": st.column_config.NumberColumn("Budget (€)", format="%,.0f"),
+                    "classe": st.column_config.TextColumn("Classe"),
+                    "famille": st.column_config.TextColumn("Famille"),
                 })
+
             col1, col2 = st.columns(2)
             with col1:
                 bud_cl = filt.groupby('classe')['montant_budget'].sum().reset_index()
-                fig = px.bar(bud_cl, x='classe', y='montant_budget', title="Par Classe",
+                bud_cl_graph = pd.concat([bud_cl, pd.DataFrame([
+                    {'classe': f'Alur ({alur_taux_bud:.0f}%)', 'montant_budget': alur_annuel_bud}
+                ])], ignore_index=True)
+                fig = px.bar(bud_cl_graph, x='classe', y='montant_budget',
+                    title=f"Budget {annee_filter} par Classe + Alur",
                     labels={'montant_budget':'Budget (€)','classe':'Classe'}, color='classe')
                 fig.update_traces(texttemplate='%{y:,.0f}€', textposition='outside')
                 st.plotly_chart(fig, use_container_width=True)
             with col2:
-                fig = px.pie(bud_cl, values='montant_budget', names='classe', title="Répartition par Classe")
+                fig = px.pie(bud_cl_graph, values='montant_budget', names='classe',
+                    title=f"Répartition Budget + Alur {annee_filter}")
                 fig.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig, use_container_width=True)
-            st.download_button("📥 Exporter CSV (avec Alur)", filt_display.to_csv(index=False).encode('utf-8'), f"budget_{annee_filter}.csv", "text/csv")
+
+            st.download_button("📥 Exporter CSV (avec Alur)",
+                filt_display.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig'),
+                f"budget_{annee_filter}.csv", "text/csv")
 
         with tab2:
             subtab1, subtab2, subtab3 = st.tabs(["✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer"])
