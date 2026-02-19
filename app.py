@@ -103,6 +103,188 @@ MAPPING_CLASSE_TANTIEME = {
     '6':  'ssols',
 }
 
+# ==================== CONFIGURATION SYNDIC ====================
+SYNDIC_INFO = {
+    "nom": "VILLA TOBIAS (0275)",
+    "adresse": "52 RUE SMOLETT",
+    "cp_ville": "06300 NICE",
+    "ville": "NICE",
+}
+
+# Libellés des postes pour les PDFs (correspondance clé CHARGES_CONFIG → libellé officiel)
+POSTES_LABELS = {
+    'general':    'CHARGES COMMUNES GENERALES',
+    'ascenseurs': 'ASCENSEURS',
+    'rdc_ssols':  'CHARGES SPECIALES RDC S/SOLS',
+    'garages':    'CHARGES GARAGES/PARKINGS',
+    'ssols':      'MONTE VOITURES',
+}
+
+def generate_appel_pdf_bytes(syndic, cop_row, periode, label_trim, annee,
+                              montants, alur_par_appel, nb_appels):
+    """Génère le PDF d'appel de fonds pour un copropriétaire. Retourne bytes."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.enums import TA_RIGHT, TA_CENTER
+    from io import BytesIO
+
+    JAUNE      = colors.HexColor('#FFD700')
+    JAUNE_CLAIR= colors.HexColor('#FFFACD')
+    BLEU       = colors.HexColor('#4472C4')
+    GRIS_CLAIR = colors.HexColor('#D9D9D9')
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+        leftMargin=15*mm, rightMargin=15*mm,
+        topMargin=12*mm, bottomMargin=15*mm)
+
+    def sty(size=9, bold=False, align='LEFT', color=colors.black):
+        from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
+        al = {'LEFT': TA_LEFT, 'RIGHT': TA_RIGHT, 'CENTER': TA_CENTER}[align]
+        fn = 'Helvetica-Bold' if bold else 'Helvetica'
+        return ParagraphStyle('s', fontSize=size, fontName=fn, textColor=color,
+                              alignment=al, leading=size*1.3)
+
+    story = []
+
+    # --- EN-TÊTE ---
+    from datetime import date
+    date_str = date.today().strftime('%d/%m/%Y')
+    header = Table([[
+        [Paragraph("<u><b>Appel de Fonds</b></u>", sty(20, True)),
+         Paragraph(f"Période du {periode}", sty(9))],
+        [Paragraph(f"A {syndic['ville']}, le {date_str}", sty(9, align='RIGHT')),
+         Paragraph(f"<b>{syndic['nom']}</b>", sty(9, True, 'RIGHT')),
+         Paragraph(syndic['adresse'], sty(9, align='RIGHT')),
+         Paragraph(syndic['cp_ville'], sty(9, align='RIGHT'))]
+    ]], colWidths=[95*mm, 85*mm])
+    header.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP')]))
+    story.append(header)
+    story.append(Spacer(1, 6*mm))
+
+    # --- BLOC RÉF / DESTINATAIRE ---
+    nom_cop  = str(cop_row.get('nom', ''))
+    ref_cop  = f"0275-{str(cop_row.get('lot','')).zfill(4)}"
+    login    = str(cop_row.get('login', '') or '')
+    adresse  = str(cop_row.get('adresse', '') or '')
+    cp_ville = str(cop_row.get('cp_ville', '') or '')
+
+    ref_tbl = Table([[
+        [Paragraph(f"<b>APPEL DE FONDS TRIMESTRIELS {annee}</b>", sty(9, True)),
+         Paragraph(f"Réf : {ref_cop} / {nom_cop}", sty(9)),
+         Paragraph(f"Internet Login : {login}  Mot de Passe :", sty(9))],
+        [],
+        [Paragraph(f"<b>{nom_cop}</b>", sty(9, True)),
+         Paragraph(adresse, sty(9)),
+         Paragraph(cp_ville, sty(9))]
+    ]], colWidths=[80*mm, 20*mm, 80*mm])
+    ref_tbl.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP')]))
+    story.append(ref_tbl)
+    story.append(Spacer(1, 8*mm))
+
+    # --- TABLEAU DES POSTES ---
+    col_widths = [14*mm, 82*mm, 22*mm, 22*mm, 22*mm, 22*mm]
+    thead = [['', Paragraph('Postes à répartir', sty(9, True, 'CENTER', colors.white)),
+              Paragraph('Total', sty(9, True, 'CENTER', colors.white)),
+              Paragraph('Base', sty(9, True, 'CENTER', colors.white)),
+              Paragraph('Tantièmes', sty(9, True, 'CENTER', colors.white)),
+              Paragraph('Quote-part', sty(9, True, 'CENTER', colors.white))]]
+
+    lot   = str(cop_row.get('lot',''))
+    usage = str(cop_row.get('usage',''))
+    rows  = [[Paragraph(f"<b>{lot}</b>", sty(9, True)),
+              Paragraph(f"<b>{usage}</b>", sty(9, True)),
+              '', '', '', '']]
+
+    total_lot = 0
+    for key, cfg in CHARGES_CONFIG.items():
+        tant  = float(cop_row.get(cfg['col'], 0) or 0)
+        if cfg['total'] == 0 or tant == 0:
+            continue
+        montant_annuel = montants.get(key, 0)
+        quote_part = round((tant / cfg['total']) * (montant_annuel / nb_appels), 2)
+        if quote_part == 0:
+            continue
+        total_lot += quote_part
+        rows.append(['',
+            Paragraph(POSTES_LABELS.get(key, cfg['label']), sty(8.5)),
+            Paragraph(f"{montant_annuel/nb_appels:,.2f}", sty(8.5, align='RIGHT')),
+            Paragraph(str(cfg['total']), sty(8.5, align='CENTER')),
+            Paragraph(str(int(tant)), sty(8.5, align='CENTER')),
+            Paragraph(f"{quote_part:,.2f}", sty(8.5, align='RIGHT'))])
+
+    # Ligne Alur
+    tant_gen = float(cop_row.get('tantieme_general', 0) or 0)
+    if tant_gen > 0 and alur_par_appel > 0:
+        alur_cop = round(tant_gen / 10000 * alur_par_appel, 2)
+        total_lot += alur_cop
+        rows.append(['',
+            Paragraph('FONDS TRAVAUX ALUR', sty(8.5)),
+            Paragraph(f"{alur_par_appel:,.2f}", sty(8.5, align='RIGHT')),
+            Paragraph('10000', sty(8.5, align='CENTER')),
+            Paragraph(str(int(tant_gen)), sty(8.5, align='CENTER')),
+            Paragraph(f"{alur_cop:,.2f}", sty(8.5, align='RIGHT'))])
+
+    dont_tva = round(total_lot * 20 / 120, 2)
+
+    rows.append(['', Paragraph('<b>TOTAL DU LOT</b>', sty(9, True, 'RIGHT')),
+                 '', '', '',
+                 Paragraph(f"<b>{total_lot:,.2f}</b>", sty(9, True, 'RIGHT'))])
+    rows.append(['', Paragraph('<b>DONT TVA</b>', sty(9, True, 'RIGHT')),
+                 '', '', '',
+                 Paragraph(f"<b>{dont_tva:,.2f}</b>", sty(9, True, 'RIGHT'))])
+
+    table_data = thead + rows
+    n = len(table_data)
+    n_lot = 1; n_ds = 2; n_de = n - 3; n_tot = n - 2; n_tva = n - 1
+
+    tbl = Table(table_data, colWidths=col_widths, repeatRows=1)
+    style_rules = [
+        ('BACKGROUND', (0,0), (-1,0), BLEU),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('ALIGN', (0,0), (-1,0), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('TOPPADDING', (0,0), (-1,0), 5), ('BOTTOMPADDING', (0,0), (-1,0), 5),
+        ('BACKGROUND', (0,n_lot), (-1,n_lot), GRIS_CLAIR),
+        ('BACKGROUND', (5,n_ds), (5,n_de), GRIS_CLAIR),
+        ('BACKGROUND', (0,n_tot), (-1,n_tot), JAUNE),
+        ('BACKGROUND', (0,n_tva), (-1,n_tva), JAUNE_CLAIR),
+        ('GRID', (0,0), (-1,-1), 0.4, colors.HexColor('#CCCCCC')),
+        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#999999')),
+        ('ALIGN', (2,1), (2,-1), 'RIGHT'),
+        ('ALIGN', (3,1), (3,-1), 'CENTER'),
+        ('ALIGN', (4,1), (4,-1), 'CENTER'),
+        ('ALIGN', (5,1), (5,-1), 'RIGHT'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,1), (-1,-1), 3), ('BOTTOMPADDING', (0,1), (-1,-1), 3),
+        ('LEFTPADDING', (1,0), (1,-1), 6),
+    ]
+    for i in range(n_ds, n_tot):
+        bg = colors.white if i % 2 == 0 else colors.HexColor('#F5F5F5')
+        style_rules.append(('BACKGROUND', (0,i), (4,i), bg))
+    tbl.setStyle(TableStyle(style_rules))
+    story.append(tbl)
+
+    # --- MONTANT TOTAL ---
+    story.append(Spacer(1, 6*mm))
+    mt = Table([[
+        Paragraph("Montant de l'appel de fonds", sty(11, True)),
+        Paragraph(f"<b>{total_lot:,.2f} €</b>", sty(14, True, 'RIGHT'))
+    ]], colWidths=[130*mm, 50*mm])
+    mt.setStyle(TableStyle([
+        ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+        ('LINEABOVE',(0,0),(-1,0),1.5,colors.black),
+        ('TOPPADDING',(0,0),(-1,0),6),
+    ]))
+    story.append(mt)
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
+
 CHARGES_CONFIG = {
     'general':    {'col': 'tantieme_general',    'total': 10000, 'label': 'Charges générales',        'emoji': '🏢', 'classes': ['1A','1B','7']},
     'ascenseurs': {'col': 'tantieme_ascenseurs',  'total': 1000,  'label': 'Ascenseurs',               'emoji': '🛗', 'classes': ['5']},
@@ -1053,10 +1235,75 @@ elif menu == "🔄 Répartition":
                 c4.metric("Appel moyen / copro", f"{total_avec_alur/len(appels_df):,.2f} €")
 
                 csv_appel = appels_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
-                st.download_button(
-                    f"📥 Exporter appel {label_trim} {annee_appel} (CSV)",
-                    csv_appel, f"appel_{label_trim}_{annee_appel}.csv", "text/csv"
-                )
+
+                # ---- EXPORT CSV + PDF ----
+                col_exp1, col_exp2, col_exp3 = st.columns(3)
+                with col_exp1:
+                    st.download_button(
+                        f"📥 CSV — Appel {label_trim} {annee_appel}",
+                        csv_appel, f"appel_{label_trim}_{annee_appel}.csv", "text/csv"
+                    )
+
+                with col_exp2:
+                    # PDF individuel : sélection d'un copropriétaire
+                    noms_copros = appels_df['Copropriétaire'].tolist()
+                    copro_sel_pdf = st.selectbox(
+                        "📄 PDF individuel — Copropriétaire",
+                        options=noms_copros,
+                        key="pdf_copro_sel"
+                    )
+                    if st.button("📄 Générer PDF individuel", key="btn_pdf_indiv"):
+                        cop_row_pdf = copro_df[copro_df['nom'] == copro_sel_pdf].iloc[0] if len(copro_df[copro_df['nom'] == copro_sel_pdf]) > 0 else None
+                        if cop_row_pdf is not None:
+                            mois_debut = {'T1':'01/01','T2':'01/04','T3':'01/07','T4':'01/10'}[label_trim]
+                            mois_fin   = {'T1':'31/03','T2':'30/06','T3':'30/09','T4':'31/12'}[label_trim]
+                            periode_pdf = f"{mois_debut}/{annee_appel} au {mois_fin}/{annee_appel}"
+                            pdf_bytes = generate_appel_pdf_bytes(
+                                SYNDIC_INFO, cop_row_pdf.to_dict(), periode_pdf,
+                                label_trim, annee_appel, montants, alur_par_appel, nb_appels
+                            )
+                            st.download_button(
+                                f"⬇️ Télécharger PDF — {copro_sel_pdf}",
+                                pdf_bytes,
+                                f"appel_{label_trim}_{annee_appel}_{cop_row_pdf.get('lot','')}.pdf",
+                                "application/pdf",
+                                key="dl_pdf_indiv"
+                            )
+                        else:
+                            st.error("Copropriétaire non trouvé")
+
+                with col_exp3:
+                    # PDF tous les copropriétaires (fusionné)
+                    if st.button("📦 Générer tous les PDFs (ZIP)", key="btn_pdf_all"):
+                        import zipfile, io as _io
+                        mois_debut = {'T1':'01/01','T2':'01/04','T3':'01/07','T4':'01/10'}[label_trim]
+                        mois_fin   = {'T1':'31/03','T2':'30/06','T3':'30/09','T4':'31/12'}[label_trim]
+                        periode_pdf = f"{mois_debut}/{annee_appel} au {mois_fin}/{annee_appel}"
+
+                        zip_buf = _io.BytesIO()
+                        nb_gen = 0
+                        with st.spinner(f"Génération des PDFs en cours..."):
+                            with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                                for _, cop_row_pdf in copro_df.iterrows():
+                                    try:
+                                        pdf_b = generate_appel_pdf_bytes(
+                                            SYNDIC_INFO, cop_row_pdf.to_dict(), periode_pdf,
+                                            label_trim, annee_appel, montants, alur_par_appel, nb_appels
+                                        )
+                                        fname = f"appel_{label_trim}_{annee_appel}_lot{str(cop_row_pdf.get('lot','')).zfill(4)}.pdf"
+                                        zf.writestr(fname, pdf_b)
+                                        nb_gen += 1
+                                    except Exception as e_pdf:
+                                        st.warning(f"⚠️ Erreur lot {cop_row_pdf.get('lot','?')}: {e_pdf}")
+                        zip_buf.seek(0)
+                        st.success(f"✅ {nb_gen} PDFs générés")
+                        st.download_button(
+                            f"⬇️ Télécharger ZIP ({nb_gen} PDFs)",
+                            zip_buf.getvalue(),
+                            f"appels_{label_trim}_{annee_appel}.zip",
+                            "application/zip",
+                            key="dl_zip_all"
+                        )
 
                 st.divider()
                 col1, col2 = st.columns(2)
