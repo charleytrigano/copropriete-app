@@ -564,7 +564,8 @@ st.sidebar.image("https://img.icons8.com/color/96/000000/office-building.png", w
 st.sidebar.title("Navigation")
 menu = st.sidebar.radio("Choisir une section", [
     "📊 Tableau de Bord", "💰 Budget", "📝 Dépenses",
-    "👥 Copropriétaires", "🔄 Répartition", "🏛️ Loi Alur", "📈 Analyses", "📋 Plan Comptable"
+    "👥 Copropriétaires", "🔄 Répartition", "🏛️ Loi Alur", "📈 Analyses", "📋 Plan Comptable",
+    "🏛 AG — Assemblée Générale"
 ])
 
 # ==================== TABLEAU DE BORD ====================
@@ -2617,6 +2618,446 @@ elif menu == "📋 Plan Comptable":
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ {e}")
+
+# ==================== ONGLET AG ====================
+elif menu == "🏛 AG — Assemblée Générale":
+    st.markdown("<h1 class='main-header'>🏛 Assemblée Générale</h1>", unsafe_allow_html=True)
+
+    # Fonction pour charger les AG depuis Supabase
+    @st.cache_data(ttl=30)
+    def get_ag_list():
+        try:
+            r = supabase.table('ag').select('*').order('date', desc=True).execute()
+            return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+        except:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=30)
+    def get_ag_items(ag_id):
+        try:
+            r = supabase.table('ag_items').select('*').eq('ag_id', ag_id).order('ordre').execute()
+            return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+        except:
+            return pd.DataFrame()
+
+    ag_tab1, ag_tab2, ag_tab3 = st.tabs(["📋 Consulter / Répondre", "➕ Nouvelle AG", "🗑️ Gérer"])
+
+    # ── ONGLET CONSULTER ────────────────────────────────────────
+    with ag_tab1:
+        ag_df = get_ag_list()
+
+        if ag_df.empty:
+            st.info("Aucune AG enregistrée. Créez-en une dans l'onglet **➕ Nouvelle AG**.")
+        else:
+            # Sélection de l'AG
+            ag_options = ag_df.apply(
+                lambda r: f"{r['date']} — {r['titre']}", axis=1
+            ).tolist()
+            sel_ag_label = st.selectbox("📅 Assemblée Générale", ag_options, key="ag_sel")
+            sel_ag_idx = ag_options.index(sel_ag_label)
+            sel_ag = ag_df.iloc[sel_ag_idx]
+            sel_ag_id = int(sel_ag['id'])
+
+            st.divider()
+            col_info1, col_info2, col_info3 = st.columns(3)
+            col_info1.metric("Date", sel_ag['date'])
+            col_info2.metric("Lieu", sel_ag.get('lieu', '—') or '—')
+            col_info3.metric("Type", sel_ag.get('type_ag', '—') or '—')
+            if sel_ag.get('description'):
+                st.caption(sel_ag['description'])
+
+            st.divider()
+
+            items_df = get_ag_items(sel_ag_id)
+
+            # Bouton ajouter une question/résolution
+            with st.expander("➕ Ajouter une question / résolution", expanded=False):
+                with st.form(f"form_add_item_{sel_ag_id}"):
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        new_ordre = st.number_input("N° ordre du jour", min_value=1,
+                            value=int(items_df['ordre'].max() + 1) if not items_df.empty else 1,
+                            step=1, key="new_item_ordre")
+                        new_type = st.selectbox("Type", ["Question", "Résolution", "Information", "Vote"], key="new_item_type")
+                        new_vote = st.selectbox("Vote", ["—", "Approuvé", "Rejeté", "Ajourné", "Sans objet"], key="new_item_vote")
+                    with col2:
+                        new_titre = st.text_input("Titre / Point de l'ordre du jour *", key="new_item_titre")
+                        new_question = st.text_area("Question / Commentaire", height=100, key="new_item_question",
+                            placeholder="Texte de la question, de la résolution ou du commentaire...")
+                        new_reponse = st.text_area("Réponse / Décision", height=100, key="new_item_reponse",
+                            placeholder="Réponse apportée, décision prise, résultat du vote...")
+                    submitted_item = st.form_submit_button("✅ Ajouter", use_container_width=True)
+                    if submitted_item:
+                        if not new_titre:
+                            st.error("⚠️ Le titre est obligatoire.")
+                        else:
+                            try:
+                                supabase.table('ag_items').insert({
+                                    'ag_id':    sel_ag_id,
+                                    'ordre':    int(new_ordre),
+                                    'type':     new_type,
+                                    'titre':    new_titre.strip(),
+                                    'question': new_question.strip() if new_question else None,
+                                    'reponse':  new_reponse.strip() if new_reponse else None,
+                                    'vote':     new_vote if new_vote != "—" else None,
+                                }).execute()
+                                st.success("✅ Point ajouté.")
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+
+            st.subheader(f"📋 Ordre du jour — {sel_ag['titre']}")
+
+            if items_df.empty:
+                st.info("Aucun point à l'ordre du jour. Ajoutez-en un ci-dessus.")
+            else:
+                VOTE_COLORS = {
+                    'Approuvé':   ('#1B5E20', '#E8F5E9'),
+                    'Rejeté':     ('#B71C1C', '#FFEBEE'),
+                    'Ajourné':    ('#E65100', '#FFF3E0'),
+                    'Sans objet': ('#37474F', '#ECEFF1'),
+                }
+                TYPE_EMOJI = {
+                    'Question':    '❓',
+                    'Résolution':  '📜',
+                    'Information': 'ℹ️',
+                    'Vote':        '🗳️',
+                }
+
+                for _, item in items_df.sort_values('ordre').iterrows():
+                    item_id = int(item['id'])
+                    vote = item.get('vote') or ''
+                    vote_color, vote_bg = VOTE_COLORS.get(vote, ('#1565C0', '#E3F2FD'))
+                    type_emoji = TYPE_EMOJI.get(item.get('type',''), '📌')
+
+                    # Badge vote
+                    badge_html = (f"<span style='background:{vote_bg};color:{vote_color};"
+                                  f"padding:2px 10px;border-radius:12px;font-size:0.8em;"
+                                  f"font-weight:bold;border:1px solid {vote_color};'>{vote}</span>"
+                                  if vote else "")
+
+                    st.markdown(
+                        f"<div style='background:#1E2130;border-left:4px solid {vote_color};"
+                        f"border-radius:6px;padding:10px 14px;margin-bottom:6px;'>"
+                        f"<b>{type_emoji} {int(item['ordre'])}. {item['titre']}</b>"
+                        f"{'&nbsp;&nbsp;' + badge_html if badge_html else ''}"
+                        f"</div>", unsafe_allow_html=True
+                    )
+
+                    # Affichage question / réponse en vis-à-vis
+                    col_q, col_r = st.columns(2)
+                    with col_q:
+                        st.markdown("**🗣️ Question / Commentaire**")
+                        st.text_area("", value=item.get('question') or '', height=120,
+                            disabled=True, key=f"q_ro_{item_id}", label_visibility="collapsed")
+                    with col_r:
+                        st.markdown("**✅ Réponse / Décision**")
+                        reponse_edit = st.text_area("", value=item.get('reponse') or '', height=120,
+                            key=f"r_edit_{item_id}", label_visibility="collapsed",
+                            placeholder="Saisir la réponse ou décision...")
+
+                    # Ligne d'action : vote + enregistrer + supprimer
+                    col_v, col_s, col_del = st.columns([2, 2, 1])
+                    with col_v:
+                        vote_opts = ["—", "Approuvé", "Rejeté", "Ajourné", "Sans objet"]
+                        vote_idx = vote_opts.index(vote) if vote in vote_opts else 0
+                        vote_edit = st.selectbox("Vote", vote_opts, index=vote_idx,
+                            key=f"vote_{item_id}", label_visibility="collapsed")
+                    with col_s:
+                        if st.button("💾 Enregistrer", key=f"save_{item_id}", use_container_width=True):
+                            try:
+                                supabase.table('ag_items').update({
+                                    'reponse': reponse_edit.strip() if reponse_edit else None,
+                                    'vote':    vote_edit if vote_edit != "—" else None,
+                                }).eq('id', item_id).execute()
+                                st.success("✅ Enregistré")
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+                    with col_del:
+                        if st.button("🗑️", key=f"del_item_{item_id}", use_container_width=True,
+                                     help="Supprimer ce point"):
+                            try:
+                                supabase.table('ag_items').delete().eq('id', item_id).execute()
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+
+                    st.divider()
+
+            # Export PV
+            if not items_df.empty:
+                if st.button("📄 Exporter PV (CSV)", key="export_pv"):
+                    pv_df = items_df[['ordre','type','titre','question','reponse','vote']].sort_values('ordre')
+                    pv_csv = pv_df.to_csv(index=False, sep=';').encode('utf-8-sig')
+                    st.download_button("⬇️ Télécharger le PV", pv_csv,
+                        f"PV_AG_{sel_ag['date'].replace('/','_')}.csv", "text/csv")
+
+    # ── ONGLET NOUVELLE AG ──────────────────────────────────────
+    with ag_tab2:
+        st.subheader("➕ Créer une nouvelle Assemblée Générale")
+        with st.form("form_new_ag"):
+            col1, col2 = st.columns(2)
+            with col1:
+                ag_date = st.date_input("Date de l'AG *", key="ag_new_date")
+                ag_titre = st.text_input("Titre *", placeholder="ex: AG Ordinaire 2025", key="ag_new_titre")
+                ag_type = st.selectbox("Type", ["Ordinaire", "Extraordinaire", "Mixte"], key="ag_new_type")
+            with col2:
+                ag_lieu = st.text_input("Lieu", placeholder="ex: Salle de réunion RDC", key="ag_new_lieu")
+                ag_president = st.text_input("Président de séance", key="ag_new_pres")
+                ag_desc = st.text_area("Description / Observations", height=100, key="ag_new_desc")
+            submitted_ag = st.form_submit_button("✅ Créer l'AG", use_container_width=True)
+            if submitted_ag:
+                if not ag_titre:
+                    st.error("⚠️ Le titre est obligatoire.")
+                else:
+                    try:
+                        supabase.table('ag').insert({
+                            'date':       ag_date.strftime('%Y-%m-%d'),
+                            'titre':      ag_titre.strip(),
+                            'type_ag':    ag_type,
+                            'lieu':       ag_lieu.strip() if ag_lieu else None,
+                            'president':  ag_president.strip() if ag_president else None,
+                            'description': ag_desc.strip() if ag_desc else None,
+                        }).execute()
+                        st.success(f"✅ AG **{ag_titre}** créée.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+
+    # ── ONGLET GÉRER ────────────────────────────────────────────
+    with ag_tab3:
+        st.subheader("🗑️ Supprimer une Assemblée Générale")
+        ag_df2 = get_ag_list()
+        if ag_df2.empty:
+            st.info("Aucune AG à supprimer.")
+        else:
+            ag_del_opts = ag_df2.apply(lambda r: f"{r['date']} — {r['titre']}", axis=1).tolist()
+            sel_del_ag = st.selectbox("AG à supprimer", ag_del_opts, key="ag_del_sel")
+            sel_del_ag_id = int(ag_df2.iloc[ag_del_opts.index(sel_del_ag)]['id'])
+            items_count = get_ag_items(sel_del_ag_id)
+            st.warning(f"⚠️ Supprimer cette AG et ses **{len(items_count)} point(s)** à l'ordre du jour ? "
+                       f"Cette action est irréversible.")
+            col1, col2 = st.columns(2)
+            with col1:
+                confirm_ag_del = st.checkbox("Je confirme la suppression", key="chk_ag_del")
+            with col2:
+                if st.button("🗑️ Supprimer l'AG", key="btn_del_ag",
+                             disabled=not confirm_ag_del, use_container_width=True):
+                    try:
+                        supabase.table('ag_items').delete().eq('ag_id', sel_del_ag_id).execute()
+                        supabase.table('ag').delete().eq('id', sel_del_ag_id).execute()
+                        st.success("✅ AG supprimée.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+
+# ==================== ONGLET AG ====================
+elif menu == "🏛 AG — Assemblée Générale":
+    st.markdown("<h1 class='main-header'>🏛 Assemblée Générale</h1>", unsafe_allow_html=True)
+
+    @st.cache_data(ttl=30)
+    def get_ag_list():
+        try:
+            r = supabase.table('ag').select('*').order('date', desc=True).execute()
+            return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+        except:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=30)
+    def get_ag_items(ag_id):
+        try:
+            r = supabase.table('ag_items').select('*').eq('ag_id', ag_id).order('ordre').execute()
+            return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+        except:
+            return pd.DataFrame()
+
+    ag_tab1, ag_tab2, ag_tab3 = st.tabs(["📋 Consulter / Répondre", "➕ Nouvelle AG", "🗑️ Gérer"])
+
+    with ag_tab1:
+        ag_df = get_ag_list()
+        if ag_df.empty:
+            st.info("Aucune AG enregistrée. Créez-en une dans l'onglet **➕ Nouvelle AG**.")
+        else:
+            ag_options = ag_df.apply(lambda r: f"{r['date']} — {r['titre']}", axis=1).tolist()
+            sel_ag_label = st.selectbox("📅 Assemblée Générale", ag_options, key="ag_sel")
+            sel_ag = ag_df.iloc[ag_options.index(sel_ag_label)]
+            sel_ag_id = int(sel_ag['id'])
+
+            st.divider()
+            col_info1, col_info2, col_info3 = st.columns(3)
+            col_info1.metric("Date", sel_ag['date'])
+            col_info2.metric("Lieu", sel_ag.get('lieu') or '—')
+            col_info3.metric("Type", sel_ag.get('type_ag') or '—')
+            if sel_ag.get('description'):
+                st.caption(sel_ag['description'])
+            st.divider()
+
+            items_df = get_ag_items(sel_ag_id)
+
+            with st.expander("➕ Ajouter un point à l'ordre du jour", expanded=False):
+                with st.form(f"form_add_item_{sel_ag_id}"):
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        new_ordre = st.number_input("N° ordre", min_value=1,
+                            value=int(items_df['ordre'].max() + 1) if not items_df.empty and 'ordre' in items_df.columns else 1,
+                            step=1, key="new_item_ordre")
+                        new_type = st.selectbox("Type", ["Question","Résolution","Information","Vote"], key="new_item_type")
+                        new_vote = st.selectbox("Vote", ["—","Approuvé","Rejeté","Ajourné","Sans objet"], key="new_item_vote")
+                    with col2:
+                        new_titre = st.text_input("Titre *", key="new_item_titre")
+                        new_question = st.text_area("Question / Commentaire", height=100, key="new_item_question",
+                            placeholder="Texte de la question ou du point...")
+                        new_reponse = st.text_area("Réponse / Décision", height=100, key="new_item_reponse",
+                            placeholder="Réponse ou décision (peut être complétée plus tard)...")
+                    if st.form_submit_button("✅ Ajouter le point", use_container_width=True):
+                        if not new_titre:
+                            st.error("⚠️ Le titre est obligatoire.")
+                        else:
+                            try:
+                                supabase.table('ag_items').insert({
+                                    'ag_id': sel_ag_id, 'ordre': int(new_ordre),
+                                    'type': new_type, 'titre': new_titre.strip(),
+                                    'question': new_question.strip() if new_question else None,
+                                    'reponse': new_reponse.strip() if new_reponse else None,
+                                    'vote': new_vote if new_vote != "—" else None,
+                                }).execute()
+                                st.success("✅ Point ajouté.")
+                                st.cache_data.clear(); st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+
+            st.subheader(f"📋 Ordre du jour — {sel_ag['titre']}")
+            if items_df.empty:
+                st.info("Aucun point à l'ordre du jour. Ajoutez-en un ci-dessus.")
+            else:
+                VOTE_COLORS = {
+                    'Approuvé':   ('#1B5E20','#E8F5E9'),
+                    'Rejeté':     ('#B71C1C','#FFEBEE'),
+                    'Ajourné':    ('#E65100','#FFF3E0'),
+                    'Sans objet': ('#37474F','#ECEFF1'),
+                }
+                TYPE_EMOJI = {'Question':'❓','Résolution':'📜','Information':'ℹ️','Vote':'🗳️'}
+
+                for _, item in items_df.sort_values('ordre').iterrows():
+                    item_id = int(item['id'])
+                    vote = item.get('vote') or ''
+                    vote_color, vote_bg = VOTE_COLORS.get(vote, ('#1565C0','#E3F2FD'))
+                    type_emoji = TYPE_EMOJI.get(item.get('type',''), '📌')
+                    badge = (f"<span style='background:{vote_bg};color:{vote_color};"
+                             f"padding:2px 10px;border-radius:12px;font-size:0.8em;"
+                             f"font-weight:bold;border:1px solid {vote_color};'>{vote}</span>") if vote else ""
+
+                    st.markdown(
+                        f"<div style='background:#1E2130;border-left:4px solid {vote_color};"
+                        f"border-radius:6px;padding:10px 14px;margin-bottom:4px;'>"
+                        f"<b>{type_emoji} {int(item['ordre'])}. {item['titre']}</b>"
+                        f"{'&nbsp;&nbsp;' + badge if badge else ''}</div>",
+                        unsafe_allow_html=True)
+
+                    col_q, col_r = st.columns(2)
+                    with col_q:
+                        st.markdown("**🗣️ Question / Commentaire**")
+                        st.text_area("q", value=item.get('question') or '', height=120,
+                            disabled=True, key=f"q_ro_{item_id}", label_visibility="collapsed")
+                    with col_r:
+                        st.markdown("**✅ Réponse / Décision**")
+                        reponse_edit = st.text_area("r", value=item.get('reponse') or '', height=120,
+                            key=f"r_edit_{item_id}", label_visibility="collapsed",
+                            placeholder="Saisir la réponse ou décision...")
+
+                    col_v, col_s, col_del = st.columns([2, 2, 1])
+                    with col_v:
+                        vote_opts = ["—","Approuvé","Rejeté","Ajourné","Sans objet"]
+                        vote_idx = vote_opts.index(vote) if vote in vote_opts else 0
+                        vote_edit = st.selectbox("vote", vote_opts, index=vote_idx,
+                            key=f"vote_{item_id}", label_visibility="collapsed")
+                    with col_s:
+                        if st.button("💾 Enregistrer", key=f"save_{item_id}", use_container_width=True):
+                            try:
+                                supabase.table('ag_items').update({
+                                    'reponse': reponse_edit.strip() if reponse_edit else None,
+                                    'vote': vote_edit if vote_edit != "—" else None,
+                                }).eq('id', item_id).execute()
+                                st.success("✅ Enregistré"); st.cache_data.clear(); st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+                    with col_del:
+                        if st.button("🗑️", key=f"del_item_{item_id}",
+                                     use_container_width=True, help="Supprimer ce point"):
+                            try:
+                                supabase.table('ag_items').delete().eq('id', item_id).execute()
+                                st.cache_data.clear(); st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+                    st.divider()
+
+                col_exp1, col_exp2 = st.columns(2)
+                with col_exp1:
+                    pv_df = items_df[['ordre','type','titre','question','reponse','vote']].sort_values('ordre')
+                    st.download_button("📥 Exporter PV (CSV)", 
+                        pv_df.to_csv(index=False, sep=';').encode('utf-8-sig'),
+                        f"PV_AG_{str(sel_ag['date']).replace('/','_').replace('-','_')}.csv", "text/csv")
+
+    with ag_tab2:
+        st.subheader("➕ Créer une nouvelle Assemblée Générale")
+        with st.form("form_new_ag"):
+            col1, col2 = st.columns(2)
+            with col1:
+                ag_date = st.date_input("Date de l'AG *", key="ag_new_date")
+                ag_titre = st.text_input("Titre *", placeholder="ex: AG Ordinaire 2025", key="ag_new_titre")
+                ag_type = st.selectbox("Type", ["Ordinaire","Extraordinaire","Mixte"], key="ag_new_type")
+            with col2:
+                ag_lieu = st.text_input("Lieu", placeholder="ex: Salle de réunion RDC", key="ag_new_lieu")
+                ag_president = st.text_input("Président de séance", key="ag_new_pres")
+                ag_desc = st.text_area("Description / Observations", height=100, key="ag_new_desc")
+            if st.form_submit_button("✅ Créer l'AG", use_container_width=True):
+                if not ag_titre:
+                    st.error("⚠️ Le titre est obligatoire.")
+                else:
+                    try:
+                        supabase.table('ag').insert({
+                            'date': ag_date.strftime('%Y-%m-%d'), 'titre': ag_titre.strip(),
+                            'type_ag': ag_type,
+                            'lieu': ag_lieu.strip() if ag_lieu else None,
+                            'president': ag_president.strip() if ag_president else None,
+                            'description': ag_desc.strip() if ag_desc else None,
+                        }).execute()
+                        st.success(f"✅ AG **{ag_titre}** créée.")
+                        st.cache_data.clear(); st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+
+    with ag_tab3:
+        st.subheader("🗑️ Supprimer une Assemblée Générale")
+        ag_df2 = get_ag_list()
+        if ag_df2.empty:
+            st.info("Aucune AG à supprimer.")
+        else:
+            ag_del_opts = ag_df2.apply(lambda r: f"{r['date']} — {r['titre']}", axis=1).tolist()
+            sel_del_ag = st.selectbox("AG à supprimer", ag_del_opts, key="ag_del_sel")
+            sel_del_ag_id = int(ag_df2.iloc[ag_del_opts.index(sel_del_ag)]['id'])
+            nb_items = len(get_ag_items(sel_del_ag_id))
+            st.warning(f"⚠️ Supprimer cette AG et ses **{nb_items} point(s)** ? Action irréversible.")
+            col1, col2 = st.columns(2)
+            with col1:
+                confirm_ag_del = st.checkbox("Je confirme", key="chk_ag_del")
+            with col2:
+                if st.button("🗑️ Supprimer l'AG", key="btn_del_ag",
+                             disabled=not confirm_ag_del, use_container_width=True):
+                    try:
+                        supabase.table('ag_items').delete().eq('ag_id', sel_del_ag_id).execute()
+                        supabase.table('ag').delete().eq('id', sel_del_ag_id).execute()
+                        st.success("✅ AG supprimée.")
+                        st.cache_data.clear(); st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+
 
 st.divider()
 st.markdown("<div style='text-align: center; color: #666;'>🏢 Gestion de Copropriété — v2.0</div>", unsafe_allow_html=True)
