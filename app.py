@@ -1346,8 +1346,10 @@ elif menu == "🔄 Répartition":
                 value=5.0, step=0.5, key="alur_taux_reg",
                 help="Taux Alur appliqué lors des appels provisionnels (5% minimum légal)")
         with col4:
-            source_prov = st.radio("Base des provisions", ["Budget prévisionnel", "Saisie manuelle"], key="src_prov",
-                help="Budget = les provisions sont calculées depuis le budget. Manuelle = vous saisissez les montants exacts appelés.")
+            source_prov = st.radio("Base des provisions",
+                ["Depuis appels T1-T4", "Budget prévisionnel", "Saisie manuelle"],
+                key="src_prov",
+                help="'Depuis appels T1-T4' utilise exactement les montants configurés dans l'onglet Appels (recommandé)")
 
         if depenses_df.empty:
             st.warning("⚠️ Aucune dépense disponible.")
@@ -1394,8 +1396,7 @@ elif menu == "🔄 Répartition":
                     reel_auto[key] = 0
             total_reel_auto = sum(reel_auto.values())
 
-            # Budget de l'année pour les provisions auto
-            # Provisions versées = budget annuel / 4 appels × nb_appels_reg versés + Alur versé
+            # Budget de l'année pour référence
             bud_reg = budget_df[budget_df['annee'] == annee_reg] if not budget_df.empty else pd.DataFrame()
             nb_appels_annee = 4  # appels provisionnels par an (standard)
             total_bud_reg = float(bud_reg['montant_budget'].sum()) if not bud_reg.empty else 0
@@ -1403,15 +1404,35 @@ elif menu == "🔄 Répartition":
             # Calcul Alur versé sur la période
             alur_annuel_reg = round(total_bud_reg * alur_taux_reg / 100, 2)
             alur_par_appel_reg = round(alur_annuel_reg / nb_appels_annee, 2)
-            alur_verse_reg = round(alur_par_appel_reg * nb_appels_reg, 2)  # total Alur versé sur nb_appels_reg
+            alur_verse_reg = round(alur_par_appel_reg * nb_appels_reg, 2)
 
-            prov_auto = {}
+            # Montants depuis l'onglet T1-T4 (session_state, clés "mont_{key}")
+            # Ce sont les montants RÉELLEMENT utilisés pour générer les appels
+            montants_t1t4 = {}
+            for key in CHARGES_CONFIG:
+                val = st.session_state.get(f"mont_{key}", None)
+                if val is not None:
+                    montants_t1t4[key] = round(float(val) / nb_appels_annee * nb_appels_reg, 2)
+                else:
+                    montants_t1t4[key] = None  # non disponible (onglet T1-T4 pas encore visité)
+
+            t1t4_disponible = all(v is not None for v in montants_t1t4.values())
+
+            # Montants depuis budget CSV
+            prov_depuis_budget = {}
             for key, cfg in CHARGES_CONFIG.items():
                 if not bud_reg.empty:
                     budget_annuel_type = float(bud_reg[bud_reg['classe'].isin(cfg['classes'])]['montant_budget'].sum())
-                    prov_auto[key] = round(budget_annuel_type / nb_appels_annee * nb_appels_reg, 2)
+                    prov_depuis_budget[key] = round(budget_annuel_type / nb_appels_annee * nb_appels_reg, 2)
                 else:
-                    prov_auto[key] = 0
+                    prov_depuis_budget[key] = 0
+
+            prov_auto = montants_t1t4 if t1t4_disponible else prov_depuis_budget
+
+            if source_prov == "Depuis appels T1-T4" and not t1t4_disponible:
+                st.warning("⚠️ Montants T1-T4 non disponibles (visitez d'abord l'onglet **Appels T1-T4** "
+                           "et configurez les montants). Utilisation du budget prévisionnel par défaut.")
+                prov_auto = prov_depuis_budget
 
             st.divider()
 
