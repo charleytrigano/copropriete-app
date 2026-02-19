@@ -1054,18 +1054,25 @@ elif menu == "🔄 Répartition":
 
     # ==================== ONGLET 3 : VUE GLOBALE ====================
     with tab3:
-        st.subheader("📊 Vue globale annuelle — Charges par copropriétaire")
+        st.subheader("📊 Vue globale annuelle — Charges + Alur par copropriétaire")
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             annee_glob = st.selectbox("📅 Année", annees_bud, key="glob_annee")
         with col2:
             nb_appels_glob = st.selectbox("Nb appels / an", [4,3,2,1], key="glob_nb")
+        with col3:
+            alur_taux_glob = st.number_input("🏛️ Taux Alur (%)", min_value=5.0, max_value=20.0,
+                value=5.0, step=0.5, key="alur_taux_glob")
 
         bud_glob = budget_df[budget_df['annee'] == annee_glob] if not budget_df.empty else pd.DataFrame()
-        total_bud_glob = bud_glob['montant_budget'].sum() if not bud_glob.empty else 0
+        total_bud_glob = float(bud_glob['montant_budget'].sum()) if not bud_glob.empty else 0
+        alur_glob_annuel = round(total_bud_glob * alur_taux_glob / 100, 2)
+        alur_glob_appel = round(alur_glob_annuel / nb_appels_glob, 2)
 
-        st.info(f"Budget {annee_glob} : **{total_bud_glob:,.0f} €** | {len(copro_df)} copropriétaires")
+        st.info(f"Budget {annee_glob} : **{total_bud_glob:,.0f} €** "
+                f"+ 🏛️ Alur ({alur_taux_glob:.0f}%) : **{alur_glob_annuel:,.0f} €/an** "
+                f"= **{total_bud_glob + alur_glob_annuel:,.0f} €** total | {len(copro_df)} copropriétaires")
         st.divider()
 
         # Montants auto depuis budget
@@ -1093,33 +1100,57 @@ elif menu == "🔄 Répartition":
 
         glob_df = calculer_appels(copro_df, montants_glob)
 
-        # Ajouter les colonnes trimestrielles
-        for t in ['T1','T2','T3','T4']:
-            glob_df[f'{t} (€)'] = (glob_df['💰 TOTAL Annuel (€)'] / nb_appels_glob).round(2)
+        # Alur par copropriétaire via tantième général
+        glob_df['🏛️ Alur Annuel (€)'] = (glob_df['_tantieme_general'] / 10000 * alur_glob_annuel).round(2)
+        glob_df['💰 TOTAL + Alur Annuel (€)'] = (glob_df['💰 TOTAL Annuel (€)'] + glob_df['🏛️ Alur Annuel (€)']).round(2)
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total configuré", f"{total_glob:,.0f} €")
-        c2.metric("Total réparti", f"{glob_df['💰 TOTAL Annuel (€)'].sum():,.2f} €")
-        c3.metric("Charge moyenne", f"{glob_df['💰 TOTAL Annuel (€)'].mean():,.2f} €")
+        # Colonnes par appel
+        for t in ['T1','T2','T3','T4']:
+            glob_df[f'Charges {t} (€)'] = (glob_df['💰 TOTAL Annuel (€)'] / nb_appels_glob).round(2)
+            glob_df[f'Alur {t} (€)'] = (glob_df['_tantieme_general'] / 10000 * alur_glob_appel).round(2)
+            glob_df[f'🎯 TOTAL {t} (€)'] = (glob_df[f'Charges {t} (€)'] + glob_df[f'Alur {t} (€)']).round(2)
+
+        # Supprimer colonne technique
+        if '_tantieme_general' in glob_df.columns:
+            glob_df = glob_df.drop(columns=['_tantieme_general'])
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Budget charges", f"{total_glob:,.0f} €")
+        c2.metric(f"🏛️ Alur ({alur_taux_glob:.0f}%)", f"{alur_glob_annuel:,.0f} €")
+        c3.metric("💰 TOTAL annuel + Alur", f"{glob_df['💰 TOTAL + Alur Annuel (€)'].sum():,.2f} €")
+        c4.metric("Appel moyen / copro", f"{glob_df['💰 TOTAL + Alur Annuel (€)'].mean():,.2f} €")
 
         st.divider()
-        display_cols = ['Lot','Copropriétaire','Étage','Usage','💰 TOTAL Annuel (€)','T1 (€)','T2 (€)','T3 (€)','T4 (€)']
+
+        # Choix de vue
+        vue = st.radio("Affichage", ["Vue annuelle", "Vue par appel (T1/T2/T3/T4)"], horizontal=True, key="glob_vue")
+
+        if vue == "Vue annuelle":
+            display_cols = ['Lot','Copropriétaire','Étage','Usage',
+                            '💰 TOTAL Annuel (€)','🏛️ Alur Annuel (€)','💰 TOTAL + Alur Annuel (€)']
+        else:
+            display_cols = ['Lot','Copropriétaire','Étage','Usage']
+            for t in ['T1','T2','T3','T4']:
+                display_cols += [f'Charges {t} (€)', f'Alur {t} (€)', f'🎯 TOTAL {t} (€)']
+
         display_cols = [c for c in display_cols if c in glob_df.columns]
         st.dataframe(glob_df[display_cols], use_container_width=True, hide_index=True,
             column_config={c: st.column_config.NumberColumn(format="%.2f") for c in display_cols if '€' in c})
 
         fig = px.bar(
-            glob_df.sort_values('💰 TOTAL Annuel (€)', ascending=False),
-            x='Copropriétaire', y='💰 TOTAL Annuel (€)',
-            color='Usage', title=f"Charges annuelles {annee_glob} par copropriétaire",
-            text='💰 TOTAL Annuel (€)'
+            glob_df.sort_values('💰 TOTAL + Alur Annuel (€)', ascending=False),
+            x='Copropriétaire', y=['💰 TOTAL Annuel (€)', '🏛️ Alur Annuel (€)'],
+            title=f"Charges annuelles + Alur {annee_glob} par copropriétaire",
+            labels={'value': 'Montant (€)', 'variable': 'Type'},
+            color_discrete_map={'💰 TOTAL Annuel (€)': '#1f77b4', '🏛️ Alur Annuel (€)': '#ff7f0e'},
+            barmode='stack'
         )
-        fig.update_traces(texttemplate='%{text:.0f}€', textposition='outside')
         fig.update_layout(xaxis_tickangle=45, height=500)
         st.plotly_chart(fig, use_container_width=True)
 
         csv_glob = glob_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
-        st.download_button(f"📥 Exporter vue globale {annee_glob}", csv_glob, f"charges_{annee_glob}.csv", "text/csv")
+        st.download_button(f"📥 Exporter vue globale {annee_glob} (avec Alur)",
+            csv_glob, f"charges_{annee_glob}.csv", "text/csv")
 
 # ==================== ANALYSES ====================
 elif menu == "📈 Analyses":
