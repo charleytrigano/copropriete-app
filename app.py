@@ -55,6 +55,20 @@ def get_plan_comptable():
     except Exception as e:
         st.error(f"❌ Erreur plan comptable: {e}"); return pd.DataFrame()
 
+def get_travaux_votes():
+    try:
+        return pd.DataFrame(supabase.table('travaux_votes').select('*').order('date').execute().data)
+    except Exception as e:
+        st.error(f"❌ Erreur travaux_votes: {e}"); return pd.DataFrame()
+
+def get_travaux_votes_depense_ids():
+    """Retourne les IDs des dépenses transférées en travaux votés."""
+    try:
+        res = supabase.table('travaux_votes').select('depense_id').not_.is_('depense_id', 'null').execute()
+        return [r['depense_id'] for r in res.data if r.get('depense_id')]
+    except:
+        return []
+
 def get_loi_alur():
     try:
         return pd.DataFrame(supabase.table('loi_alur').select('*').order('date').execute().data)
@@ -502,7 +516,7 @@ elif menu == "📝 Dépenses":
             c4.metric("Réalisé vs Budget", "N/A")
         st.divider()
 
-        tab1, tab2, tab3, tab4 = st.tabs(["📋 Consulter", "✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Consulter", "✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer", "🏗️ Travaux Votés"])
 
         with tab1:
             disp = dep_f[['date','compte','libelle_compte','fournisseur','montant_du','classe','commentaire']].copy().sort_values('date', ascending=False)
@@ -593,6 +607,228 @@ elif menu == "📝 Dépenses":
                 if st.button("🗑️ Confirmer la suppression", type="secondary"):
                     for i in ids_del: supabase.table('depenses').delete().eq('id', i).execute()
                     st.success(f"✅ {len(ids_del)} dépense(s) supprimée(s)"); st.rerun()
+        with tab5:
+            st.subheader("🏗️ Travaux Votés en Assemblée Générale")
+            st.info("""
+            Les **travaux votés en AG** sont financés par appel de fonds spécifique et ne font pas partie
+            des charges courantes. Les factures affectées ici sont **déduites des dépenses courantes**
+            et n'entrent pas dans le calcul du 5ème appel de charges.
+            """)
+
+            tv_df = get_travaux_votes()
+            tv_dep_ids = get_travaux_votes_depense_ids()
+
+            # Métriques
+            if not tv_df.empty:
+                tv_df['date'] = pd.to_datetime(tv_df['date'])
+                tv_df['montant'] = pd.to_numeric(tv_df['montant'], errors='coerce').fillna(0)
+                tv_df['commentaire'] = tv_df['commentaire'].fillna('').astype(str).replace('None','')
+
+            total_tv = tv_df['montant'].sum() if not tv_df.empty else 0
+            nb_tv = len(tv_df) if not tv_df.empty else 0
+            nb_dep_transferees = len([x for x in tv_dep_ids if x])
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Nb travaux", nb_tv)
+            c2.metric("Montant total", f"{total_tv:,.2f} €")
+            c3.metric("Factures transférées", nb_dep_transferees)
+            # Nb dépenses courantes de l'année filtrées par les transferts
+            dep_tv_annee = dep_f[dep_f['id'].isin(tv_dep_ids)]
+            c4.metric("Déduit des charges", f"{dep_tv_annee['montant_du'].sum():,.2f} €",
+                help="Montant des factures de cette année transférées en travaux votés")
+
+            st.divider()
+
+            subtab1, subtab2, subtab3, subtab4 = st.tabs([
+                "📋 Liste", "➕ Nouveau chantier", "🔗 Transférer factures", "🗑️ Gérer"
+            ])
+
+            # ---- LISTE ----
+            with subtab1:
+                if tv_df.empty:
+                    st.info("💡 Aucun travail voté enregistré.")
+                else:
+                    # Grouper par objet/chantier si la colonne existe
+                    disp_tv = tv_df.copy().sort_values('date', ascending=False)
+                    disp_tv['date_fmt'] = disp_tv['date'].dt.strftime('%d/%m/%Y')
+                    disp_tv['Source'] = disp_tv['depense_id'].apply(
+                        lambda x: '🔗 Transférée' if pd.notna(x) and x else '✏️ Saisie manuelle')
+
+                    cols_show = ['date_fmt','objet','fournisseur','montant','commentaire','Source']
+                    cols_show = [c for c in cols_show if c in disp_tv.columns]
+                    st.dataframe(
+                        disp_tv[cols_show].rename(columns={
+                            'date_fmt':'Date','objet':'Objet / Chantier',
+                            'fournisseur':'Fournisseur','montant':'Montant (€)','commentaire':'Commentaire'
+                        }),
+                        use_container_width=True, hide_index=True,
+                        column_config={"Montant (€)": st.column_config.NumberColumn(format="%,.2f")}
+                    )
+
+                    # Résumé par chantier
+                    if 'objet' in tv_df.columns and tv_df['objet'].notna().any():
+                        st.subheader("Résumé par chantier")
+                        by_obj = tv_df.groupby('objet')['montant'].agg(['sum','count']).reset_index()
+                        by_obj.columns = ['Chantier','Total (€)','Nb factures']
+                        by_obj = by_obj.sort_values('Total (€)', ascending=False)
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.dataframe(by_obj, use_container_width=True, hide_index=True,
+                                column_config={"Total (€)": st.column_config.NumberColumn(format="%,.2f")})
+                        with col2:
+                            fig = px.pie(by_obj, values='Total (€)', names='Chantier',
+                                title="Répartition par chantier")
+                            st.plotly_chart(fig, use_container_width=True)
+
+                    csv_tv = tv_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+                    st.download_button("📥 Exporter CSV", csv_tv, "travaux_votes.csv", "text/csv")
+
+            # ---- NOUVEAU CHANTIER / SAISIE MANUELLE ----
+            with subtab2:
+                st.subheader("Ajouter une dépense de travaux votés")
+                with st.form("form_tv"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        tv_date = st.date_input("Date de la facture *", value=datetime.now())
+                        tv_objet = st.text_input("Objet / Chantier *",
+                            placeholder="Ex: Ravalement façade, Remplacement ascenseur...")
+                        tv_fournisseur = st.text_input("Fournisseur *")
+                    with col2:
+                        tv_montant = st.number_input("Montant (€) *", min_value=0.0, step=0.01, format="%.2f")
+                        tv_ag = st.text_input("AG de vote", placeholder="Ex: AG du 15/03/2024")
+                        tv_comment = st.text_area("Commentaire")
+
+                    if st.form_submit_button("✨ Enregistrer", type="primary", use_container_width=True):
+                        if tv_objet and tv_fournisseur and tv_montant > 0:
+                            try:
+                                supabase.table('travaux_votes').insert({
+                                    'date': tv_date.strftime('%Y-%m-%d'),
+                                    'objet': tv_objet.strip(),
+                                    'fournisseur': tv_fournisseur.strip(),
+                                    'montant': float(tv_montant),
+                                    'ag_vote': tv_ag.strip() if tv_ag else None,
+                                    'commentaire': tv_comment.strip() if tv_comment else None,
+                                    'depense_id': None
+                                }).execute()
+                                st.success("✅ Travaux enregistrés!"); st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+                        else:
+                            st.error("❌ Remplissez tous les champs obligatoires")
+
+            # ---- TRANSFÉRER FACTURES ----
+            with subtab3:
+                st.subheader("🔗 Transférer des factures depuis les Dépenses courantes")
+                st.caption("Les factures transférées restent dans la table Dépenses mais sont marquées comme "
+                           "travaux votés et **exclues des charges courantes** (5ème appel).")
+
+                # Filtrer les dépenses non encore transférées
+                dep_non_tv = dep_f[~dep_f['id'].isin(tv_dep_ids)].copy()
+                dep_deja_tv = dep_f[dep_f['id'].isin(tv_dep_ids)].copy()
+
+                col1, col2 = st.columns(2)
+                col1.metric("Dépenses transférables", len(dep_non_tv))
+                col2.metric("Déjà transférées (cette année)", len(dep_deja_tv),
+                    delta=f"{dep_deja_tv['montant_du'].sum():,.2f} €")
+
+                if dep_non_tv.empty:
+                    st.info("Toutes les dépenses de cette année sont déjà transférées.")
+                else:
+                    # Champ objet pour grouper le transfert
+                    tv_objet_tr = st.text_input("Objet / Chantier *",
+                        placeholder="Ex: Ravalement façade 2025", key="tv_objet_tr")
+                    tv_ag_tr = st.text_input("AG de vote", placeholder="Ex: AG du 15/03/2024", key="tv_ag_tr")
+
+                    ids_tv_sel = st.multiselect(
+                        "Sélectionner les factures à transférer",
+                        options=dep_non_tv['id'].tolist(),
+                        format_func=lambda x: (
+                            f"{dep_non_tv[dep_non_tv['id']==x]['date'].dt.strftime('%d/%m/%Y').values[0]} — "
+                            f"{dep_non_tv[dep_non_tv['id']==x]['fournisseur'].values[0]} — "
+                            f"{dep_non_tv[dep_non_tv['id']==x]['montant_du'].values[0]:,.2f} €"
+                        ),
+                        key="tv_dep_select"
+                    )
+
+                    # Aperçu tableau
+                    if dep_non_tv is not None and not dep_non_tv.empty:
+                        dep_preview = dep_non_tv[['date','fournisseur','montant_du','classe','commentaire']].copy()
+                        dep_preview['date'] = dep_preview['date'].dt.strftime('%d/%m/%Y')
+                        dep_preview['Sélectionné'] = dep_non_tv['id'].isin(ids_tv_sel).values
+                        st.dataframe(dep_preview, use_container_width=True, hide_index=True,
+                            column_config={
+                                "montant_du": st.column_config.NumberColumn("Montant (€)", format="%,.2f"),
+                                "Sélectionné": st.column_config.CheckboxColumn("✓")
+                            })
+
+                    if ids_tv_sel:
+                        total_sel_tv = dep_non_tv[dep_non_tv['id'].isin(ids_tv_sel)]['montant_du'].sum()
+                        st.info(f"**{len(ids_tv_sel)}** facture(s) — **{total_sel_tv:,.2f} €**")
+
+                        if st.button("🔗 Transférer en Travaux Votés", type="primary",
+                                     disabled=not tv_objet_tr):
+                            if not tv_objet_tr:
+                                st.error("❌ Saisissez l'objet du chantier")
+                            else:
+                                try:
+                                    for dep_id in ids_tv_sel:
+                                        dep_row = dep_non_tv[dep_non_tv['id'] == dep_id].iloc[0]
+                                        supabase.table('travaux_votes').insert({
+                                            'date': dep_row['date'].strftime('%Y-%m-%d'),
+                                            'objet': tv_objet_tr.strip(),
+                                            'fournisseur': dep_row['fournisseur'],
+                                            'montant': float(dep_row['montant_du']),
+                                            'ag_vote': tv_ag_tr.strip() if tv_ag_tr else None,
+                                            'commentaire': str(dep_row.get('commentaire','') or ''),
+                                            'depense_id': int(dep_id)
+                                        }).execute()
+                                    st.success(f"✅ {len(ids_tv_sel)} facture(s) transférée(s)!"); st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ {e}")
+
+                # Retransférer (annuler un transfert)
+                if not dep_deja_tv.empty:
+                    st.divider()
+                    st.subheader("↩️ Annuler un transfert")
+                    ids_annul = st.multiselect(
+                        "Factures à ré-intégrer dans les charges courantes",
+                        options=dep_deja_tv['id'].tolist(),
+                        format_func=lambda x: (
+                            f"{dep_deja_tv[dep_deja_tv['id']==x]['date'].dt.strftime('%d/%m/%Y').values[0]} — "
+                            f"{dep_deja_tv[dep_deja_tv['id']==x]['fournisseur'].values[0]} — "
+                            f"{dep_deja_tv[dep_deja_tv['id']==x]['montant_du'].values[0]:,.2f} €"
+                        ), key="tv_annul"
+                    )
+                    if ids_annul and st.button("↩️ Annuler le transfert", type="secondary"):
+                        try:
+                            for dep_id in ids_annul:
+                                supabase.table('travaux_votes').delete().eq('depense_id', dep_id).execute()
+                            st.success(f"✅ {len(ids_annul)} transfert(s) annulé(s)"); st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ {e}")
+
+            # ---- GÉRER ----
+            with subtab4:
+                st.warning("⚠️ La suppression est définitive.")
+                if tv_df.empty:
+                    st.info("Aucun travail voté enregistré.")
+                else:
+                    tv_manuels = tv_df[tv_df['depense_id'].isna()] if 'depense_id' in tv_df.columns else tv_df
+                    if not tv_manuels.empty:
+                        ids_tv_del = st.multiselect("Supprimer des entrées manuelles",
+                            options=tv_manuels['id'].tolist(),
+                            format_func=lambda x: (
+                                f"{tv_manuels[tv_manuels['id']==x]['date'].dt.strftime('%d/%m/%Y').values[0]} — "
+                                f"{tv_manuels[tv_manuels['id']==x]['objet'].values[0]} — "
+                                f"{tv_manuels[tv_manuels['id']==x]['montant'].values[0]:,.2f} €"
+                            ))
+                        if ids_tv_del and st.button("🗑️ Supprimer", type="secondary", key="del_tv"):
+                            for i in ids_tv_del:
+                                supabase.table('travaux_votes').delete().eq('id', i).execute()
+                            st.success(f"✅ {len(ids_tv_del)} supprimé(s)"); st.rerun()
+                    else:
+                        st.info("Toutes les entrées sont des transferts (à annuler via l'onglet 🔗).")
+
     else:
         st.info("💡 Aucune dépense. Utilisez l'onglet ➕ Ajouter.")
 
@@ -861,15 +1097,31 @@ elif menu == "🔄 Répartition":
             # Exclure les dépenses affectées au fonds Alur
             alur_ids_reg = get_depenses_alur_ids()
             dep_reg_alur = dep_reg[dep_reg['id'].isin(alur_ids_reg)]
-            dep_reg_hors_alur = dep_reg[~dep_reg['id'].isin(alur_ids_reg)]
             nb_alur_exclus = len(dep_reg_alur)
             montant_alur_exclus = dep_reg_alur['montant_du'].sum()
 
-            if nb_alur_exclus > 0:
-                st.info(f"🏛️ **{nb_alur_exclus} dépense(s) affectée(s) au fonds Alur** exclues du calcul "
-                        f"({montant_alur_exclus:,.2f} € — financées par le fonds de travaux)")
+            # Exclure les dépenses transférées en Travaux Votés
+            tv_ids_reg = get_travaux_votes_depense_ids()
+            dep_reg_tv = dep_reg[dep_reg['id'].isin(tv_ids_reg)]
+            nb_tv_exclus = len(dep_reg_tv)
+            montant_tv_exclus = dep_reg_tv['montant_du'].sum()
 
-            # Dépenses réelles HORS Alur par type (automatique via mapping classe)
+            # Dépenses courantes = hors Alur ET hors Travaux Votés
+            ids_exclus = set(alur_ids_reg) | set(tv_ids_reg)
+            dep_reg_hors_alur = dep_reg[~dep_reg['id'].isin(ids_exclus)]
+
+            # Bandeau récap des exclusions
+            if nb_alur_exclus > 0 or nb_tv_exclus > 0:
+                msg_parts = []
+                if nb_alur_exclus > 0:
+                    msg_parts.append(f"🏛️ **{nb_alur_exclus} dép. Alur** ({montant_alur_exclus:,.2f} €)")
+                if nb_tv_exclus > 0:
+                    msg_parts.append(f"🏗️ **{nb_tv_exclus} dép. Travaux Votés** ({montant_tv_exclus:,.2f} €)")
+                total_exclus = montant_alur_exclus + montant_tv_exclus
+                st.info(f"Dépenses exclues des charges courantes : {' + '.join(msg_parts)} "
+                        f"= **{total_exclus:,.2f} €** déduits du 5ème appel")
+
+            # Dépenses réelles HORS Alur et HORS Travaux Votés par type
             reel_auto = {}
             for key, cfg in CHARGES_CONFIG.items():
                 if 'classe' in dep_reg_hors_alur.columns:
