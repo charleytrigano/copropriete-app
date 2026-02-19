@@ -87,7 +87,7 @@ def get_depenses_alur_ids():
 # Basé sur votre plan comptable réel :
 # Classe 1A, 1B, 7 → Charges générales → tantième_general / 10 000
 # Classe 2          → Électricité RDC/ss-sols → tantième_rdc_ssols / 928
-# Classe 3          → Électricité sous-sols → tantième_rdc_ssols / 928
+# Classe 3          → Électricité sous-sols → tantième_ssols / 20
 # Classe 4          → Garages/Parkings → tantième_garages / 28
 # Classe 5          → Ascenseurs → tantième_ascenseurs / 1 000
 # Classe 6          → Monte-voitures → tantième_ssols / 20
@@ -97,7 +97,7 @@ MAPPING_CLASSE_TANTIEME = {
     '1B': 'general',
     '7':  'general',
     '2':  'rdc_ssols',
-    '3':  'rdc_ssols',
+    '3':  'ssols_elec',
     '4':  'garages',
     '5':  'ascenseurs',
     '6':  'ssols',
@@ -116,6 +116,7 @@ POSTES_LABELS = {
     'general':    'CHARGES COMMUNES GENERALES',
     'ascenseurs': 'ASCENSEURS',
     'rdc_ssols':  'CHARGES SPECIALES RDC S/SOLS',
+    'ssols_elec': 'CHARGES SPECIALES S/SOLS',
     'garages':    'CHARGES GARAGES/PARKINGS',
     'ssols':      'MONTE VOITURES',
 }
@@ -288,7 +289,8 @@ def generate_appel_pdf_bytes(syndic, cop_row, periode, label_trim, annee,
 CHARGES_CONFIG = {
     'general':    {'col': 'tantieme_general',    'total': 10000, 'label': 'Charges générales',        'emoji': '🏢', 'classes': ['1A','1B','7']},
     'ascenseurs': {'col': 'tantieme_ascenseurs',  'total': 1000,  'label': 'Ascenseurs',               'emoji': '🛗', 'classes': ['5']},
-    'rdc_ssols':  {'col': 'tantieme_rdc_ssols',   'total': 928,   'label': 'RDC / Sous-sols',          'emoji': '🅿️', 'classes': ['2','3']},
+    'rdc_ssols':  {'col': 'tantieme_rdc_ssols',   'total': 928,   'label': 'Charges spéc. RDC S/Sols', 'emoji': '🅿️', 'classes': ['2']},
+    'ssols_elec': {'col': 'tantieme_ssols',       'total': 20,    'label': 'Charges spéc. S/Sols',     'emoji': '⬇️', 'classes': ['3']},
     'garages':    {'col': 'tantieme_garages',     'total': 28,    'label': 'Garages / Parkings',       'emoji': '🔑', 'classes': ['4']},
     'ssols':      {'col': 'tantieme_ssols',       'total': 20,    'label': 'Monte-voitures',           'emoji': '🚗', 'classes': ['6']},
 }
