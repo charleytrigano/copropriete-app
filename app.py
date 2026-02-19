@@ -1154,28 +1154,79 @@ elif menu == "🔄 Répartition":
 
             # ---- TABLEAU RÉCAP AUTOMATIQUE ----
             st.subheader(f"📊 Dépenses réelles {annee_reg} par type de charge")
+
+            # Calcul des totaux bruts (toutes dépenses de l'année)
+            reel_brut = {}
+            for key, cfg in CHARGES_CONFIG.items():
+                if 'classe' in dep_reg.columns:
+                    reel_brut[key] = float(dep_reg[dep_reg['classe'].isin(cfg['classes'])]['montant_du'].sum())
+                else:
+                    reel_brut[key] = 0
+            total_reel_brut = sum(reel_brut.values())
+
+            # Déduction Alur par type
+            alur_ded = {}
+            for key, cfg in CHARGES_CONFIG.items():
+                if 'classe' in dep_reg_alur.columns:
+                    alur_ded[key] = float(dep_reg_alur[dep_reg_alur['classe'].isin(cfg['classes'])]['montant_du'].sum())
+                else:
+                    alur_ded[key] = 0
+
+            # Déduction Travaux Votés par type
+            tv_ded = {}
+            for key, cfg in CHARGES_CONFIG.items():
+                if 'classe' in dep_reg_tv.columns:
+                    tv_ded[key] = float(dep_reg_tv[dep_reg_tv['classe'].isin(cfg['classes'])]['montant_du'].sum())
+                else:
+                    tv_ded[key] = 0
+
             recap_data = []
             for key, cfg in CHARGES_CONFIG.items():
                 recap_data.append({
                     'Type': f"{cfg['emoji']} {cfg['label']}",
                     'Classes': ', '.join(cfg['classes']),
-                    'Budget prévisionnel (€)': round(prov_auto.get(key, 0), 2),
-                    'Dépenses réelles (€)': round(reel_auto.get(key, 0), 2),
+                    'Budget (€)': round(prov_auto.get(key, 0), 2),
+                    'Dépenses brutes (€)': round(reel_brut.get(key, 0), 2),
+                    '— Alur (€)': round(-alur_ded.get(key, 0), 2) if alur_ded.get(key, 0) > 0 else None,
+                    '— Trav. Votés (€)': round(-tv_ded.get(key, 0), 2) if tv_ded.get(key, 0) > 0 else None,
+                    'Dépenses nettes (€)': round(reel_auto.get(key, 0), 2),
                     'Écart (€)': round(reel_auto.get(key, 0) - prov_auto.get(key, 0), 2),
                 })
+
+            # Ligne TOTAL
             recap_data.append({
-                'Type': '**TOTAL**', 'Classes': '',
-                'Budget prévisionnel (€)': sum(r['Budget prévisionnel (€)'] for r in recap_data),
-                'Dépenses réelles (€)': sum(r['Dépenses réelles (€)'] for r in recap_data),
-                'Écart (€)': sum(r['Écart (€)'] for r in recap_data),
+                'Type': '💰 TOTAL',
+                'Classes': '',
+                'Budget (€)': sum(r['Budget (€)'] for r in recap_data),
+                'Dépenses brutes (€)': round(total_reel_brut, 2),
+                '— Alur (€)': round(-montant_alur_exclus, 2) if montant_alur_exclus > 0 else None,
+                '— Trav. Votés (€)': round(-montant_tv_exclus, 2) if montant_tv_exclus > 0 else None,
+                'Dépenses nettes (€)': round(total_reel_auto, 2),
+                'Écart (€)': round(total_reel_auto - sum(r['Budget (€)'] for r in recap_data[:-1]), 2),
             })
+
             recap_df = pd.DataFrame(recap_data)
             st.dataframe(recap_df, use_container_width=True, hide_index=True,
                 column_config={
-                    'Budget prévisionnel (€)': st.column_config.NumberColumn(format="%,.2f"),
-                    'Dépenses réelles (€)': st.column_config.NumberColumn(format="%,.2f"),
+                    'Budget (€)': st.column_config.NumberColumn(format="%,.2f"),
+                    'Dépenses brutes (€)': st.column_config.NumberColumn(format="%,.2f"),
+                    '— Alur (€)': st.column_config.NumberColumn(format="%,.2f"),
+                    '— Trav. Votés (€)': st.column_config.NumberColumn(format="%,.2f"),
+                    'Dépenses nettes (€)': st.column_config.NumberColumn(format="%,.2f"),
                     'Écart (€)': st.column_config.NumberColumn(format="%+,.2f"),
                 })
+
+            # Bandeau récap déductions si applicable
+            if montant_alur_exclus > 0 or montant_tv_exclus > 0:
+                cols_ded = st.columns(4)
+                cols_ded[0].metric("Dépenses brutes", f"{total_reel_brut:,.2f} €")
+                if montant_alur_exclus > 0:
+                    cols_ded[1].metric("— Fonds Alur", f"{montant_alur_exclus:,.2f} €")
+                if montant_tv_exclus > 0:
+                    cols_ded[2].metric("— Travaux Votés", f"{montant_tv_exclus:,.2f} €")
+                cols_ded[3].metric("= Dépenses nettes", f"{total_reel_auto:,.2f} €",
+                    delta=f"-{montant_alur_exclus + montant_tv_exclus:,.2f} €",
+                    delta_color="off")
 
             st.divider()
 
@@ -1214,11 +1265,13 @@ elif menu == "🔄 Répartition":
             # ---- MÉTRIQUES GLOBALES ----
             c1, c2, c3, c4 = st.columns(4)
             solde_global = total_reel_auto - total_prov
-            c1.metric("Dépenses réelles", f"{total_reel_auto:,.2f} €")
+            c1.metric("Dépenses nettes", f"{total_reel_auto:,.2f} €",
+                help=f"Brut {total_reel_brut:,.2f} € − déductions {montant_alur_exclus+montant_tv_exclus:,.2f} €")
             c2.metric("Provisions versées", f"{total_prov:,.2f} €")
-            c3.metric("Solde global", f"{solde_global:+,.2f} €",
+            c3.metric("5ème appel global", f"{solde_global:+,.2f} €",
                 delta_color="inverse" if solde_global > 0 else "normal")
-            c4.metric("Nb lignes de dépenses", len(dep_reg))
+            c4.metric("Dépenses exclues", f"{montant_alur_exclus+montant_tv_exclus:,.2f} €",
+                help=f"Alur: {montant_alur_exclus:,.2f} € | Travaux votés: {montant_tv_exclus:,.2f} €")
 
             if total_prov == 0:
                 st.info("💡 Configurez les provisions pour calculer la régularisation.")
