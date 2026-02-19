@@ -1391,11 +1391,14 @@ elif menu == "🔄 Répartition":
             total_reel_auto = sum(reel_auto.values())
 
             # Budget de l'année pour les provisions auto
+            # Provisions versées = budget annuel / 4 appels × nb_appels_reg versés
             bud_reg = budget_df[budget_df['annee'] == annee_reg] if not budget_df.empty else pd.DataFrame()
+            nb_appels_annee = 4  # appels provisionnels par an (standard)
             prov_auto = {}
             for key, cfg in CHARGES_CONFIG.items():
                 if not bud_reg.empty:
-                    prov_auto[key] = float(bud_reg[bud_reg['classe'].isin(cfg['classes'])]['montant_budget'].sum())
+                    budget_annuel_type = float(bud_reg[bud_reg['classe'].isin(cfg['classes'])]['montant_budget'].sum())
+                    prov_auto[key] = round(budget_annuel_type / nb_appels_annee * nb_appels_reg, 2)
                 else:
                     prov_auto[key] = 0
 
@@ -1483,7 +1486,7 @@ elif menu == "🔄 Répartition":
             st.subheader("💰 Montants des provisions versées")
 
             if source_prov == "Budget prévisionnel":
-                st.caption(f"✅ Provisions calculées depuis le budget {annee_reg} × {nb_appels_reg}/{nb_appels_reg} appels versés.")
+                st.caption(f"✅ Budget {annee_reg} ÷ 4 appels × {nb_appels_reg} appels versés = {nb_appels_reg*25:.0f}% du budget annuel.")
                 provisions = {k: v for k, v in prov_auto.items()}
                 # Affichage en lecture seule
                 prov_display = pd.DataFrame([
@@ -1503,7 +1506,7 @@ elif menu == "🔄 Répartition":
                         provisions[key] = st.number_input(
                             f"{cfg['emoji']} {cfg['label']} (€)",
                             min_value=0.0,
-                            value=round(prov_auto.get(key, 0.0), 2),
+                            value=round(prov_auto.get(key, 0.0), 2),  # déjà × nb_appels_reg/4
                             step=100.0, key=f"prov_man_{key}"
                         )
 
