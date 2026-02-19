@@ -1330,295 +1330,191 @@ elif menu == "🔄 Répartition":
     with tab2:
         st.subheader("5ème appel — Régularisation sur dépenses réelles")
         st.info("""
-        **Principe :** Les 4 appels provisionnels sont basés sur le budget prévisionnel.  
-        Le 5ème appel régularise la différence entre les **dépenses réelles** et les **provisions versées**.  
-        → Solde **positif** = complément à appeler | Solde **négatif** = remboursement aux copropriétaires
+        **Principe :** Appels de fonds = Budget_type × (tantièmes_copro / total)  
+        Charges réelles = Dépenses_réelles_type × (tantièmes_copro / total)  
+        **5ème appel = Charges réelles − Appels de fonds versés**  
+        → Positif = complément à payer | Négatif = remboursement
         """)
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3 = st.columns(3)
         with col1:
             annee_reg = st.selectbox("📅 Année à régulariser", annees_bud, key="reg_annee")
         with col2:
             nb_appels_reg = st.selectbox("Nb appels provisionnels versés", [4,3,2,1], key="nb_reg",
-                help="Nombre d'appels provisionnels déjà appelés dans l'année")
+                help="Nombre d'appels provisionnels déjà versés dans l'année")
         with col3:
             alur_taux_reg = st.number_input("🏛️ Taux Alur (%)", min_value=5.0, max_value=20.0,
-                value=5.0, step=0.5, key="alur_taux_reg",
-                help="Taux Alur appliqué lors des appels provisionnels (5% minimum légal)")
-        with col4:
-            source_prov = st.radio("Base des provisions",
-                ["Depuis appels T1-T4", "Budget prévisionnel", "Saisie manuelle"],
-                key="src_prov",
-                help="'Depuis appels T1-T4' utilise exactement les montants configurés dans l'onglet Appels (recommandé)")
+                value=5.0, step=0.5, key="alur_taux_reg")
 
         if depenses_df.empty:
             st.warning("⚠️ Aucune dépense disponible.")
         else:
-            # Préparer les dépenses réelles de l'année
+            # Préparer dépenses réelles de l'année
             depenses_df_reg = depenses_df.copy()
             depenses_df_reg['date'] = pd.to_datetime(depenses_df_reg['date'])
             depenses_df_reg['montant_du'] = pd.to_numeric(depenses_df_reg['montant_du'], errors='coerce')
             dep_reg = depenses_df_reg[depenses_df_reg['date'].dt.year == annee_reg].copy()
 
-            # Exclure les dépenses affectées au fonds Alur
+            # Exclure Alur et Travaux Votés
             alur_ids_reg = get_depenses_alur_ids()
-            dep_reg_alur = dep_reg[dep_reg['id'].isin(alur_ids_reg)]
-            nb_alur_exclus = len(dep_reg_alur)
-            montant_alur_exclus = dep_reg_alur['montant_du'].sum()
+            tv_ids_reg   = get_travaux_votes_depense_ids()
+            ids_exclus   = set(alur_ids_reg) | set(tv_ids_reg)
+            dep_reg_net  = dep_reg[~dep_reg['id'].isin(ids_exclus)]
 
-            # Exclure les dépenses transférées en Travaux Votés
-            tv_ids_reg = get_travaux_votes_depense_ids()
-            dep_reg_tv = dep_reg[dep_reg['id'].isin(tv_ids_reg)]
-            nb_tv_exclus = len(dep_reg_tv)
-            montant_tv_exclus = dep_reg_tv['montant_du'].sum()
+            montant_alur_exclus = dep_reg[dep_reg['id'].isin(alur_ids_reg)]['montant_du'].sum()
+            montant_tv_exclus   = dep_reg[dep_reg['id'].isin(tv_ids_reg)]['montant_du'].sum()
+            if montant_alur_exclus > 0 or montant_tv_exclus > 0:
+                st.info(f"🔒 Exclus du calcul : 🏛️ Alur {montant_alur_exclus:,.2f} € | "
+                        f"🏗️ Travaux votés {montant_tv_exclus:,.2f} €")
 
-            # Dépenses courantes = hors Alur ET hors Travaux Votés
-            ids_exclus = set(alur_ids_reg) | set(tv_ids_reg)
-            dep_reg_hors_alur = dep_reg[~dep_reg['id'].isin(ids_exclus)]
-
-            # Bandeau récap des exclusions
-            if nb_alur_exclus > 0 or nb_tv_exclus > 0:
-                msg_parts = []
-                if nb_alur_exclus > 0:
-                    msg_parts.append(f"🏛️ **{nb_alur_exclus} dép. Alur** ({montant_alur_exclus:,.2f} €)")
-                if nb_tv_exclus > 0:
-                    msg_parts.append(f"🏗️ **{nb_tv_exclus} dép. Travaux Votés** ({montant_tv_exclus:,.2f} €)")
-                total_exclus = montant_alur_exclus + montant_tv_exclus
-                st.info(f"Dépenses exclues des charges courantes : {' + '.join(msg_parts)} "
-                        f"= **{total_exclus:,.2f} €** déduits du 5ème appel")
-
-            # Dépenses réelles HORS Alur et HORS Travaux Votés par type
-            reel_auto = {}
+            # Dépenses réelles nettes par type
+            dep_reel_type = {}
             for key, cfg in CHARGES_CONFIG.items():
-                if 'classe' in dep_reg_hors_alur.columns:
-                    reel_auto[key] = float(dep_reg_hors_alur[dep_reg_hors_alur['classe'].isin(cfg['classes'])]['montant_du'].sum())
+                if 'classe' in dep_reg_net.columns:
+                    dep_reel_type[key] = float(dep_reg_net[dep_reg_net['classe'].isin(cfg['classes'])]['montant_du'].sum())
                 else:
-                    reel_auto[key] = 0
-            total_reel_auto = sum(reel_auto.values())
+                    dep_reel_type[key] = 0
 
-            # Budget de l'année pour référence
+            # Budget CSV de référence
             bud_reg = budget_df[budget_df['annee'] == annee_reg] if not budget_df.empty else pd.DataFrame()
-            nb_appels_annee = 4  # appels provisionnels par an (standard)
-            total_bud_reg = float(bud_reg['montant_budget'].sum()) if not bud_reg.empty else 0
 
-            # Calcul Alur versé sur la période
-            alur_annuel_reg = round(total_bud_reg * alur_taux_reg / 100, 2)
-            alur_par_appel_reg = round(alur_annuel_reg / nb_appels_annee, 2)
-            alur_verse_reg = round(alur_par_appel_reg * nb_appels_reg, 2)
+            # ---- SAISIE DES BUDGETS APPELÉS ----
+            st.divider()
+            st.subheader("⚙️ Budgets annuels utilisés pour les appels de fonds")
+            st.caption("Ces montants doivent correspondre exactement à ceux utilisés lors des appels T1 à T4. "
+                       "Ils sont pré-remplis depuis l'onglet Appels T1-T4 si vous l'avez visité.")
 
-            # Montants depuis l'onglet T1-T4 (session_state, clés "mont_{key}")
-            # Ce sont les montants RÉELLEMENT utilisés pour générer les appels
-            montants_t1t4 = {}
-            for key in CHARGES_CONFIG:
-                val = st.session_state.get(f"mont_{key}", None)
-                if val is not None:
-                    montants_t1t4[key] = round(float(val) / nb_appels_annee * nb_appels_reg, 2)
+            col1, col2, col3 = st.columns(3)
+            budgets_appel = {}
+            for i, (key, cfg) in enumerate(CHARGES_CONFIG.items()):
+                # Priorité : session_state T1-T4 > budget CSV > 0
+                val_ss = st.session_state.get(f"mont_{key}", None)
+                if val_ss is not None:
+                    val_defaut = float(val_ss)
+                elif not bud_reg.empty:
+                    val_defaut = float(bud_reg[bud_reg['classe'].isin(cfg['classes'])]['montant_budget'].sum())
                 else:
-                    montants_t1t4[key] = None  # non disponible (onglet T1-T4 pas encore visité)
+                    val_defaut = 0.0
+                with [col1, col2, col3][i % 3]:
+                    budgets_appel[key] = st.number_input(
+                        f"{cfg['emoji']} {cfg['label']} (€/an)",
+                        min_value=0.0, value=round(val_defaut, 2),
+                        step=100.0, key=f"bud_reg_{key}",
+                        help=f"Total annuel réparti sur {cfg['total']} tantièmes"
+                    )
 
-            t1t4_disponible = all(v is not None for v in montants_t1t4.values())
+            total_budget_appel = sum(budgets_appel.values())
 
-            # Montants depuis budget CSV
-            prov_depuis_budget = {}
-            for key, cfg in CHARGES_CONFIG.items():
-                if not bud_reg.empty:
-                    budget_annuel_type = float(bud_reg[bud_reg['classe'].isin(cfg['classes'])]['montant_budget'].sum())
-                    prov_depuis_budget[key] = round(budget_annuel_type / nb_appels_annee * nb_appels_reg, 2)
-                else:
-                    prov_depuis_budget[key] = 0
-
-            prov_auto = montants_t1t4 if t1t4_disponible else prov_depuis_budget
-
-            if source_prov == "Depuis appels T1-T4" and not t1t4_disponible:
-                st.warning("⚠️ Montants T1-T4 non disponibles (visitez d'abord l'onglet **Appels T1-T4** "
-                           "et configurez les montants). Utilisation du budget prévisionnel par défaut.")
-                prov_auto = prov_depuis_budget
+            # Calcul Alur
+            alur_annuel_reg    = round(total_budget_appel * alur_taux_reg / 100, 2)
+            alur_par_appel_reg = round(alur_annuel_reg / 4, 2)
+            alur_verse_reg     = round(alur_par_appel_reg * nb_appels_reg, 2)
 
             st.divider()
 
-            # ---- TABLEAU RÉCAP AUTOMATIQUE ----
-            st.subheader(f"📊 Dépenses réelles {annee_reg} par type de charge")
+            # ---- TABLEAU RÉCAP PAR TYPE ----
+            st.subheader(f"📊 Récapitulatif {annee_reg} par type de charge")
 
-            # Calcul des totaux bruts (toutes dépenses de l'année)
-            reel_brut = {}
+            recap = []
             for key, cfg in CHARGES_CONFIG.items():
-                if 'classe' in dep_reg.columns:
-                    reel_brut[key] = float(dep_reg[dep_reg['classe'].isin(cfg['classes'])]['montant_du'].sum())
-                else:
-                    reel_brut[key] = 0
-            total_reel_brut = sum(reel_brut.values())
-
-            # Déduction Alur par type
-            alur_ded = {}
-            for key, cfg in CHARGES_CONFIG.items():
-                if 'classe' in dep_reg_alur.columns:
-                    alur_ded[key] = float(dep_reg_alur[dep_reg_alur['classe'].isin(cfg['classes'])]['montant_du'].sum())
-                else:
-                    alur_ded[key] = 0
-
-            # Déduction Travaux Votés par type
-            tv_ded = {}
-            for key, cfg in CHARGES_CONFIG.items():
-                if 'classe' in dep_reg_tv.columns:
-                    tv_ded[key] = float(dep_reg_tv[dep_reg_tv['classe'].isin(cfg['classes'])]['montant_du'].sum())
-                else:
-                    tv_ded[key] = 0
-
-            recap_data = []
-            for key, cfg in CHARGES_CONFIG.items():
-                recap_data.append({
-                    'Type': f"{cfg['emoji']} {cfg['label']}",
-                    'Classes': ', '.join(cfg['classes']),
-                    'Budget (€)': round(prov_auto.get(key, 0), 2),
-                    'Dépenses brutes (€)': round(reel_brut.get(key, 0), 2),
-                    '— Alur (€)': round(-alur_ded.get(key, 0), 2) if alur_ded.get(key, 0) > 0 else None,
-                    '— Trav. Votés (€)': round(-tv_ded.get(key, 0), 2) if tv_ded.get(key, 0) > 0 else None,
-                    'Dépenses nettes (€)': round(reel_auto.get(key, 0), 2),
-                    'Écart (€)': round(reel_auto.get(key, 0) - prov_auto.get(key, 0), 2),
+                budget_an  = budgets_appel[key]
+                dep_reel   = dep_reel_type[key]
+                appels_cop = budget_an  # total appelé à tous les copros (base de répartition)
+                recap.append({
+                    'Type':               f"{cfg['emoji']} {cfg['label']}",
+                    'Budget appelé (€)':  round(budget_an, 2),
+                    'Dépenses réelles (€)': round(dep_reel, 2),
+                    'Écart (€)':           round(dep_reel - budget_an, 2),
                 })
-
-            # Ligne TOTAL
-            recap_data.append({
-                'Type': '💰 TOTAL',
-                'Classes': '',
-                'Budget (€)': sum(r['Budget (€)'] for r in recap_data),
-                'Dépenses brutes (€)': round(total_reel_brut, 2),
-                '— Alur (€)': round(-montant_alur_exclus, 2) if montant_alur_exclus > 0 else None,
-                '— Trav. Votés (€)': round(-montant_tv_exclus, 2) if montant_tv_exclus > 0 else None,
-                'Dépenses nettes (€)': round(total_reel_auto, 2),
-                'Écart (€)': round(total_reel_auto - sum(r['Budget (€)'] for r in recap_data[:-1]), 2),
+            # Ligne Alur
+            recap.append({
+                'Type':               '🏛️ Fonds Alur',
+                'Budget appelé (€)':  alur_annuel_reg,
+                'Dépenses réelles (€)': alur_annuel_reg,
+                'Écart (€)':           0,
+            })
+            recap.append({
+                'Type':               '💰 TOTAL',
+                'Budget appelé (€)':  round(sum(r['Budget appelé (€)'] for r in recap[:-1]), 2),
+                'Dépenses réelles (€)': round(sum(r['Dépenses réelles (€)'] for r in recap[:-1]), 2),
+                'Écart (€)':           round(sum(r['Écart (€)'] for r in recap[:-1]), 2),
             })
 
-            recap_df = pd.DataFrame(recap_data)
-            st.dataframe(recap_df, use_container_width=True, hide_index=True,
+            st.dataframe(pd.DataFrame(recap), use_container_width=True, hide_index=True,
                 column_config={
-                    'Budget (€)': st.column_config.NumberColumn(format="%,.2f"),
-                    'Dépenses brutes (€)': st.column_config.NumberColumn(format="%,.2f"),
-                    '— Alur (€)': st.column_config.NumberColumn(format="%,.2f"),
-                    '— Trav. Votés (€)': st.column_config.NumberColumn(format="%,.2f"),
-                    'Dépenses nettes (€)': st.column_config.NumberColumn(format="%,.2f"),
-                    'Écart (€)': st.column_config.NumberColumn(format="%+,.2f"),
+                    'Budget appelé (€)':    st.column_config.NumberColumn(format="%,.2f"),
+                    'Dépenses réelles (€)': st.column_config.NumberColumn(format="%,.2f"),
+                    'Écart (€)':            st.column_config.NumberColumn(format="%+,.2f"),
                 })
 
-            # Bandeau récap déductions si applicable
-            if montant_alur_exclus > 0 or montant_tv_exclus > 0:
-                cols_ded = st.columns(4)
-                cols_ded[0].metric("Dépenses brutes", f"{total_reel_brut:,.2f} €")
-                if montant_alur_exclus > 0:
-                    cols_ded[1].metric("— Fonds Alur", f"{montant_alur_exclus:,.2f} €")
-                if montant_tv_exclus > 0:
-                    cols_ded[2].metric("— Travaux Votés", f"{montant_tv_exclus:,.2f} €")
-                cols_ded[3].metric("= Dépenses nettes", f"{total_reel_auto:,.2f} €",
-                    delta=f"-{montant_alur_exclus + montant_tv_exclus:,.2f} €",
-                    delta_color="off")
-
-            st.divider()
-
-            # ---- SAISIE DES PROVISIONS ----
-            st.subheader("💰 Montants des provisions versées")
-
-            if source_prov == "Budget prévisionnel":
-                st.caption(f"✅ Budget {annee_reg} ÷ 4 × {nb_appels_reg} appels + Alur ({alur_taux_reg:.0f}% × {nb_appels_reg} appels = {alur_verse_reg:,.2f} €)")
-                provisions = {k: v for k, v in prov_auto.items()}
-                # Affichage en lecture seule
-                prov_display = pd.DataFrame([
-                    {'Type': f"{CHARGES_CONFIG[k]['emoji']} {CHARGES_CONFIG[k]['label']}",
-                     'Provisions versées (€)': round(v, 2)}
-                    for k, v in provisions.items()
-                ])
-                prov_display.loc[len(prov_display)] = {
-                    'Type': '💰 TOTAL charges', 'Provisions versées (€)': sum(provisions.values())}
-                prov_display.loc[len(prov_display)] = {
-                    'Type': '🏛️ Alur versé (info — hors 5ème appel)', 'Provisions versées (€)': alur_verse_reg}
-                st.dataframe(prov_display, use_container_width=True, hide_index=True,
-                    column_config={"Provisions versées (€)": st.column_config.NumberColumn(format="%,.2f")})
-            else:
-                st.caption("Saisissez les montants **exacts** appelés pour chaque type de charge sur l'année.")
-                col1, col2, col3 = st.columns(3)
-                provisions = {}
-                for i, (key, cfg) in enumerate(CHARGES_CONFIG.items()):
-                    with [col1, col2, col3][i % 3]:
-                        provisions[key] = st.number_input(
-                            f"{cfg['emoji']} {cfg['label']} (€)",
-                            min_value=0.0,
-                            value=round(prov_auto.get(key, 0.0), 2),  # déjà × nb_appels_reg/4
-                            step=100.0, key=f"prov_man_{key}"
-                        )
-
-            # L'Alur n'est PAS inclus dans les provisions pour le 5ème appel :
-            # il va dans un compte séparé (fonds de travaux) et ne régularise pas les charges courantes
-            total_prov = sum(provisions.values())
-
-            st.divider()
-
-            # ---- MÉTRIQUES GLOBALES ----
             c1, c2, c3, c4 = st.columns(4)
-            solde_global = total_reel_auto - total_prov
-            c1.metric("Dépenses nettes", f"{total_reel_auto:,.2f} €",
-                help=f"Brut {total_reel_brut:,.2f} € − déductions {montant_alur_exclus+montant_tv_exclus:,.2f} €")
-            c2.metric("Provisions charges versées", f"{total_prov:,.2f} €",
-                help="Hors Alur — l'Alur va au fonds de travaux et ne régularise pas les charges courantes")
-            c3.metric("5ème appel global", f"{solde_global:+,.2f} €",
-                delta_color="inverse" if solde_global > 0 else "normal")
-            c4.metric("🏛️ Alur versé (info)", f"{alur_verse_reg:,.2f} €",
-                help=f"Fonds de travaux versé ({nb_appels_reg} appels × {alur_par_appel_reg:,.2f} €) — hors régularisation")
+            total_dep_reel = sum(dep_reel_type.values())
+            c1.metric("Budget total appelé", f"{total_budget_appel:,.2f} €")
+            c2.metric("🏛️ Alur versé (info)", f"{alur_verse_reg:,.2f} €",
+                help="L'Alur ne fait pas l'objet d'une régularisation — il reste dans le fonds de travaux")
+            c3.metric("Dépenses réelles nettes", f"{total_dep_reel:,.2f} €")
+            c4.metric("Écart global", f"{total_dep_reel - total_budget_appel:+,.2f} €",
+                delta_color="inverse" if total_dep_reel > total_budget_appel else "normal")
 
-            if total_prov == 0:
-                st.info("💡 Configurez les provisions pour calculer la régularisation.")
+            if total_budget_appel == 0:
+                st.warning("⚠️ Saisissez les budgets par type pour calculer la régularisation.")
             else:
                 st.divider()
                 st.subheader(f"📋 5ème appel de régularisation — {annee_reg}")
 
                 # ---- CALCUL PAR COPROPRIÉTAIRE ----
+                # Formule : Appels_cop   = Budget_type × (tant_cop / total_tant)
+                #           Charges_cop  = Dep_reel_type × (tant_cop / total_tant)
+                #           5ème appel   = Charges_cop − Appels_cop
                 reg_list = []
                 for _, cop in copro_df.iterrows():
-                    prov_cop = 0
-                    reel_cop = 0
-                    detail_prov = {}
-                    detail_reel = {}
+                    appels_cop  = 0
+                    charges_cop = 0
+                    detail_app  = {}
+                    detail_dep  = {}
 
                     for key, cfg in CHARGES_CONFIG.items():
                         tant = float(cop.get(cfg['col'], 0) or 0)
                         if cfg['total'] > 0 and tant > 0:
-                            part_prov = (tant / cfg['total']) * provisions[key]
-                            part_reel = (tant / cfg['total']) * reel_auto[key]
+                            part_app = round((tant / cfg['total']) * budgets_appel[key], 2)
+                            part_dep = round((tant / cfg['total']) * dep_reel_type[key], 2)
                         else:
-                            part_prov = 0
-                            part_reel = 0
-                        prov_cop += part_prov
-                        reel_cop += part_reel
-                        detail_prov[key] = round(part_prov, 2)
-                        detail_reel[key] = round(part_reel, 2)
+                            part_app = 0.0
+                            part_dep = 0.0
+                        appels_cop  += part_app
+                        charges_cop += part_dep
+                        detail_app[key]  = part_app
+                        detail_dep[key]  = part_dep
 
-                    # Alur versé = informatif uniquement, ne fait PAS partie du 5ème appel
-                    # (l'Alur va dans fonds de travaux séparé, pas de régularisation)
+                    # Alur : informatif uniquement (pas de régularisation)
                     tant_gen = float(cop.get('tantieme_general', 0) or 0)
-                    alur_cop_verse = round(tant_gen / 10000 * alur_verse_reg, 2) if tant_gen > 0 else 0
+                    alur_cop = round(tant_gen / 10000 * alur_annuel_reg, 2) if tant_gen > 0 else 0
 
-                    # 5ème appel = dépenses réelles courantes - provisions charges courantes (Alur EXCLU)
-                    reg = reel_cop - prov_cop
+                    cinquieme = round(charges_cop - appels_cop, 2)
 
                     row = {
-                        'Lot': cop.get('lot', ''),
-                        'Copropriétaire': cop.get('nom', ''),
-                        'Étage': cop.get('etage', ''),
-                        'Usage': cop.get('usage', ''),
-                        'Provisions versées (€)': round(prov_cop, 2),
-                        '🏛️ Alur versé (€)': round(alur_cop_verse, 2),
-                        'Dépenses réelles (€)': round(reel_cop, 2),
-                        '5ème appel (€)': round(reg, 2),
-                        'Sens': '💳 À payer' if reg > 0.01 else ('💚 À rembourser' if reg < -0.01 else '✅ Soldé'),
+                        'Lot':                cop.get('lot', ''),
+                        'Copropriétaire':    cop.get('nom', ''),
+                        'Étage':             cop.get('etage', ''),
+                        'Usage':             cop.get('usage', ''),
+                        'Appels versés (€)': round(appels_cop, 2),
+                        '🏛️ Alur versé (€)': alur_cop,
+                        'Charges réelles (€)': round(charges_cop, 2),
+                        '5ème appel (€)':    cinquieme,
+                        'Sens': '💳 À payer' if cinquieme > 0.01 else ('💚 À rembourser' if cinquieme < -0.01 else '✅ Soldé'),
                     }
+                    for key, cfg in CHARGES_CONFIG.items():
+                        row[f"{cfg['emoji']} {cfg['label']}"] = detail_dep[key]
                     reg_list.append(row)
 
                 reg_df = pd.DataFrame(reg_list).sort_values('Lot')
 
-                # Options d'affichage
                 col1, col2 = st.columns(2)
                 with col1:
                     show_zeros = st.checkbox("Afficher les lots soldés", value=True, key="show_zeros_reg")
                 with col2:
-                    filtre_sens = st.selectbox("Filtrer par sens", ["Tous","💳 À payer","💚 À rembourser","✅ Soldé"], key="filtre_sens")
+                    filtre_sens = st.selectbox("Filtrer par sens",
+                        ["Tous","💳 À payer","💚 À rembourser","✅ Soldé"], key="filtre_sens")
 
                 reg_display = reg_df.copy()
                 if not show_zeros:
@@ -1626,69 +1522,44 @@ elif menu == "🔄 Répartition":
                 if filtre_sens != "Tous":
                     reg_display = reg_display[reg_display['Sens'] == filtre_sens]
 
-                st.dataframe(reg_display, use_container_width=True, hide_index=True,
-                    column_config={
-                        'Provisions versées (€)': st.column_config.NumberColumn(format="%.2f"),
-                        'Dépenses réelles (€)': st.column_config.NumberColumn(format="%.2f"),
-                        '5ème appel (€)': st.column_config.NumberColumn("🎯 5ème appel (€)", format="%+.2f"),
-                    })
+                show_det_reg = st.checkbox("Afficher le détail par type", value=False, key="show_det_reg")
+                detail_cols_reg = [f"{cfg['emoji']} {cfg['label']}" for cfg in CHARGES_CONFIG.values()]
+                base_cols_reg   = ['Lot','Copropriétaire','Étage','Usage',
+                                   'Appels versés (€)','🏛️ Alur versé (€)',
+                                   'Charges réelles (€)','5ème appel (€)','Sens']
+                if show_det_reg:
+                    disp_cols = ['Lot','Copropriétaire','Étage','Usage'] + detail_cols_reg +                                 ['Appels versés (€)','🏛️ Alur versé (€)','Charges réelles (€)','5ème appel (€)','Sens']
+                else:
+                    disp_cols = base_cols_reg
+                disp_cols = [c for c in disp_cols if c in reg_display.columns]
+
+                num_cfg = {c: st.column_config.NumberColumn(format="%,.2f")
+                           for c in disp_cols if '€' in c and c != 'Sens'}
+                num_cfg['5ème appel (€)'] = st.column_config.NumberColumn(format="%+,.2f")
+                st.dataframe(reg_display[disp_cols], use_container_width=True, hide_index=True,
+                    column_config=num_cfg)
 
                 st.divider()
-
-                # ---- MÉTRIQUES FINALES ----
                 c1, c2, c3, c4 = st.columns(4)
-                a_payer_df = reg_df[reg_df['5ème appel (€)'] > 0.01]
-                a_rembourser_df = reg_df[reg_df['5ème appel (€)'] < -0.01]
-                c1.metric("Provisions versées", f"{reg_df['Provisions versées (€)'].sum():,.2f} €")
-                c2.metric("Dépenses réelles", f"{reg_df['Dépenses réelles (€)'].sum():,.2f} €")
-                c3.metric(f"💳 Montant à appeler ({len(a_payer_df)} lots)", f"{a_payer_df['5ème appel (€)'].sum():,.2f} €")
-                c4.metric(f"💚 À rembourser ({len(a_rembourser_df)} lots)", f"{abs(a_rembourser_df['5ème appel (€)'].sum()):,.2f} €")
+                c1.metric("Total appels versés", f"{reg_df['Appels versés (€)'].sum():,.2f} €")
+                c2.metric("Total charges réelles", f"{reg_df['Charges réelles (€)'].sum():,.2f} €")
+                a_payer = reg_df[reg_df['5ème appel (€)'] > 0.01]['5ème appel (€)'].sum()
+                a_rembourser = reg_df[reg_df['5ème appel (€)'] < -0.01]['5ème appel (€)'].sum()
+                c3.metric("💳 À appeler", f"{a_payer:,.2f} €")
+                c4.metric("💚 À rembourser", f"{a_rembourser:,.2f} €")
 
-                # ---- GRAPHIQUE ----
+                # Exports
                 st.divider()
                 col1, col2 = st.columns(2)
                 with col1:
-                    fig = px.bar(
-                        reg_df.sort_values('5ème appel (€)', ascending=False),
-                        x='Copropriétaire', y='5ème appel (€)',
-                        color='Sens', title=f"5ème appel par copropriétaire — {annee_reg}",
-                        color_discrete_map={'💳 À payer':'#e74c3c','💚 À rembourser':'#2ecc71','✅ Soldé':'#95a5a6'},
-                        text='5ème appel (€)'
-                    )
-                    fig.update_traces(texttemplate='%{text:+.0f}€', textposition='outside')
-                    fig.update_layout(xaxis_tickangle=45, height=450)
-                    st.plotly_chart(fig, use_container_width=True)
+                    csv_all = reg_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+                    st.download_button(f"📥 Exporter tous les lots ({len(reg_df)})",
+                        csv_all, f"5eme_appel_{annee_reg}.csv", "text/csv")
                 with col2:
-                    # Répartition provisions vs réel par type
-                    comp_types = pd.DataFrame([
-                        {'Type': f"{CHARGES_CONFIG[k]['emoji']} {CHARGES_CONFIG[k]['label']}",
-                         'Provisions (€)': round(provisions[k], 2),
-                         'Réel (€)': round(reel_auto[k], 2)}
-                        for k in CHARGES_CONFIG
-                    ])
-                    fig2 = go.Figure()
-                    fig2.add_trace(go.Bar(name='Provisions', x=comp_types['Type'], y=comp_types['Provisions (€)'], marker_color='lightblue'))
-                    fig2.add_trace(go.Bar(name='Réel', x=comp_types['Type'], y=comp_types['Réel (€)'], marker_color='salmon'))
-                    fig2.update_layout(barmode='group', title='Provisions vs Réel par type', xaxis_tickangle=20)
-                    st.plotly_chart(fig2, use_container_width=True)
-
-                # ---- EXPORT ----
-                st.divider()
-                col1, col2 = st.columns(2)
-                with col1:
-                    csv_reg = reg_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
-                    st.download_button(
-                        f"📥 Exporter 5ème appel {annee_reg} (CSV)",
-                        csv_reg, f"5eme_appel_{annee_reg}.csv", "text/csv"
-                    )
-                with col2:
-                    # Export uniquement les lots à régulariser
                     reg_actif = reg_df[reg_df['5ème appel (€)'].abs() > 0.01]
                     csv_actif = reg_actif.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
-                    st.download_button(
-                        f"📥 Exporter uniquement lots à régulariser ({len(reg_actif)})",
-                        csv_actif, f"5eme_appel_{annee_reg}_actif.csv", "text/csv"
-                    )
+                    st.download_button(f"📥 Exporter uniquement lots à régulariser ({len(reg_actif)})",
+                        csv_actif, f"5eme_appel_{annee_reg}_actif.csv", "text/csv")
 
     # ==================== ONGLET 3 : VUE GLOBALE ====================
     with tab3:
