@@ -1335,13 +1335,17 @@ elif menu == "🔄 Répartition":
         → Solde **positif** = complément à appeler | Solde **négatif** = remboursement aux copropriétaires
         """)
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             annee_reg = st.selectbox("📅 Année à régulariser", annees_bud, key="reg_annee")
         with col2:
             nb_appels_reg = st.selectbox("Nb appels provisionnels versés", [4,3,2,1], key="nb_reg",
                 help="Nombre d'appels provisionnels déjà appelés dans l'année")
         with col3:
+            alur_taux_reg = st.number_input("🏛️ Taux Alur (%)", min_value=5.0, max_value=20.0,
+                value=5.0, step=0.5, key="alur_taux_reg",
+                help="Taux Alur appliqué lors des appels provisionnels (5% minimum légal)")
+        with col4:
             source_prov = st.radio("Base des provisions", ["Budget prévisionnel", "Saisie manuelle"], key="src_prov",
                 help="Budget = les provisions sont calculées depuis le budget. Manuelle = vous saisissez les montants exacts appelés.")
 
@@ -1391,9 +1395,16 @@ elif menu == "🔄 Répartition":
             total_reel_auto = sum(reel_auto.values())
 
             # Budget de l'année pour les provisions auto
-            # Provisions versées = budget annuel / 4 appels × nb_appels_reg versés
+            # Provisions versées = budget annuel / 4 appels × nb_appels_reg versés + Alur versé
             bud_reg = budget_df[budget_df['annee'] == annee_reg] if not budget_df.empty else pd.DataFrame()
             nb_appels_annee = 4  # appels provisionnels par an (standard)
+            total_bud_reg = float(bud_reg['montant_budget'].sum()) if not bud_reg.empty else 0
+
+            # Calcul Alur versé sur la période
+            alur_annuel_reg = round(total_bud_reg * alur_taux_reg / 100, 2)
+            alur_par_appel_reg = round(alur_annuel_reg / nb_appels_annee, 2)
+            alur_verse_reg = round(alur_par_appel_reg * nb_appels_reg, 2)  # total Alur versé sur nb_appels_reg
+
             prov_auto = {}
             for key, cfg in CHARGES_CONFIG.items():
                 if not bud_reg.empty:
@@ -1486,7 +1497,7 @@ elif menu == "🔄 Répartition":
             st.subheader("💰 Montants des provisions versées")
 
             if source_prov == "Budget prévisionnel":
-                st.caption(f"✅ Budget {annee_reg} ÷ 4 appels × {nb_appels_reg} appels versés = {nb_appels_reg*25:.0f}% du budget annuel.")
+                st.caption(f"✅ Budget {annee_reg} ÷ 4 × {nb_appels_reg} appels + Alur ({alur_taux_reg:.0f}% × {nb_appels_reg} appels = {alur_verse_reg:,.2f} €)")
                 provisions = {k: v for k, v in prov_auto.items()}
                 # Affichage en lecture seule
                 prov_display = pd.DataFrame([
@@ -1494,7 +1505,10 @@ elif menu == "🔄 Répartition":
                      'Provisions versées (€)': round(v, 2)}
                     for k, v in provisions.items()
                 ])
-                prov_display.loc[len(prov_display)] = {'Type': '**TOTAL**', 'Provisions versées (€)': sum(provisions.values())}
+                prov_display.loc[len(prov_display)] = {
+                    'Type': '🏛️ Fonds Alur', 'Provisions versées (€)': alur_verse_reg}
+                prov_display.loc[len(prov_display)] = {
+                    'Type': '💰 TOTAL (charges + Alur)', 'Provisions versées (€)': sum(provisions.values()) + alur_verse_reg}
                 st.dataframe(prov_display, use_container_width=True, hide_index=True,
                     column_config={"Provisions versées (€)": st.column_config.NumberColumn(format="%,.2f")})
             else:
@@ -1510,7 +1524,7 @@ elif menu == "🔄 Répartition":
                             step=100.0, key=f"prov_man_{key}"
                         )
 
-            total_prov = sum(provisions.values())
+            total_prov = sum(provisions.values()) + alur_verse_reg
 
             st.divider()
 
@@ -1552,6 +1566,11 @@ elif menu == "🔄 Répartition":
                         detail_prov[key] = round(part_prov, 2)
                         detail_reel[key] = round(part_reel, 2)
 
+                    # Ajouter Alur versé par ce copropriétaire (sur tantièmes généraux)
+                    tant_gen = float(cop.get('tantieme_general', 0) or 0)
+                    alur_cop_verse = round(tant_gen / 10000 * alur_verse_reg, 2) if tant_gen > 0 else 0
+                    prov_cop += alur_cop_verse
+
                     reg = reel_cop - prov_cop
 
                     row = {
@@ -1559,6 +1578,8 @@ elif menu == "🔄 Répartition":
                         'Copropriétaire': cop.get('nom', ''),
                         'Étage': cop.get('etage', ''),
                         'Usage': cop.get('usage', ''),
+                        'Provisions charges (€)': round(prov_cop - alur_cop_verse, 2),
+                        '🏛️ Alur versé (€)': round(alur_cop_verse, 2),
                         'Provisions versées (€)': round(prov_cop, 2),
                         'Dépenses réelles (€)': round(reel_cop, 2),
                         '5ème appel (€)': round(reg, 2),
