@@ -1506,9 +1506,9 @@ elif menu == "🔄 Répartition":
                     for k, v in provisions.items()
                 ])
                 prov_display.loc[len(prov_display)] = {
-                    'Type': '🏛️ Fonds Alur', 'Provisions versées (€)': alur_verse_reg}
+                    'Type': '💰 TOTAL charges', 'Provisions versées (€)': sum(provisions.values())}
                 prov_display.loc[len(prov_display)] = {
-                    'Type': '💰 TOTAL (charges + Alur)', 'Provisions versées (€)': sum(provisions.values()) + alur_verse_reg}
+                    'Type': '🏛️ Alur versé (info — hors 5ème appel)', 'Provisions versées (€)': alur_verse_reg}
                 st.dataframe(prov_display, use_container_width=True, hide_index=True,
                     column_config={"Provisions versées (€)": st.column_config.NumberColumn(format="%,.2f")})
             else:
@@ -1524,7 +1524,9 @@ elif menu == "🔄 Répartition":
                             step=100.0, key=f"prov_man_{key}"
                         )
 
-            total_prov = sum(provisions.values()) + alur_verse_reg
+            # L'Alur n'est PAS inclus dans les provisions pour le 5ème appel :
+            # il va dans un compte séparé (fonds de travaux) et ne régularise pas les charges courantes
+            total_prov = sum(provisions.values())
 
             st.divider()
 
@@ -1533,11 +1535,12 @@ elif menu == "🔄 Répartition":
             solde_global = total_reel_auto - total_prov
             c1.metric("Dépenses nettes", f"{total_reel_auto:,.2f} €",
                 help=f"Brut {total_reel_brut:,.2f} € − déductions {montant_alur_exclus+montant_tv_exclus:,.2f} €")
-            c2.metric("Provisions versées", f"{total_prov:,.2f} €")
+            c2.metric("Provisions charges versées", f"{total_prov:,.2f} €",
+                help="Hors Alur — l'Alur va au fonds de travaux et ne régularise pas les charges courantes")
             c3.metric("5ème appel global", f"{solde_global:+,.2f} €",
                 delta_color="inverse" if solde_global > 0 else "normal")
-            c4.metric("Dépenses exclues", f"{montant_alur_exclus+montant_tv_exclus:,.2f} €",
-                help=f"Alur: {montant_alur_exclus:,.2f} € | Travaux votés: {montant_tv_exclus:,.2f} €")
+            c4.metric("🏛️ Alur versé (info)", f"{alur_verse_reg:,.2f} €",
+                help=f"Fonds de travaux versé ({nb_appels_reg} appels × {alur_par_appel_reg:,.2f} €) — hors régularisation")
 
             if total_prov == 0:
                 st.info("💡 Configurez les provisions pour calculer la régularisation.")
@@ -1566,11 +1569,12 @@ elif menu == "🔄 Répartition":
                         detail_prov[key] = round(part_prov, 2)
                         detail_reel[key] = round(part_reel, 2)
 
-                    # Ajouter Alur versé par ce copropriétaire (sur tantièmes généraux)
+                    # Alur versé = informatif uniquement, ne fait PAS partie du 5ème appel
+                    # (l'Alur va dans fonds de travaux séparé, pas de régularisation)
                     tant_gen = float(cop.get('tantieme_general', 0) or 0)
                     alur_cop_verse = round(tant_gen / 10000 * alur_verse_reg, 2) if tant_gen > 0 else 0
-                    prov_cop += alur_cop_verse
 
+                    # 5ème appel = dépenses réelles courantes - provisions charges courantes (Alur EXCLU)
                     reg = reel_cop - prov_cop
 
                     row = {
@@ -1578,9 +1582,8 @@ elif menu == "🔄 Répartition":
                         'Copropriétaire': cop.get('nom', ''),
                         'Étage': cop.get('etage', ''),
                         'Usage': cop.get('usage', ''),
-                        'Provisions charges (€)': round(prov_cop - alur_cop_verse, 2),
-                        '🏛️ Alur versé (€)': round(alur_cop_verse, 2),
                         'Provisions versées (€)': round(prov_cop, 2),
+                        '🏛️ Alur versé (€)': round(alur_cop_verse, 2),
                         'Dépenses réelles (€)': round(reel_cop, 2),
                         '5ème appel (€)': round(reg, 2),
                         'Sens': '💳 À payer' if reg > 0.01 else ('💚 À rembourser' if reg < -0.01 else '✅ Soldé'),
