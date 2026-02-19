@@ -2326,52 +2326,275 @@ elif menu == "📋 Plan Comptable":
     st.markdown("<h1 class='main-header'>📋 Plan Comptable</h1>", unsafe_allow_html=True)
     plan_df = get_plan_comptable()
 
-    if not plan_df.empty:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Comptes", len(plan_df))
-        c2.metric("Classes", plan_df['classe'].nunique() if 'classe' in plan_df.columns else "N/A")
-        c3.metric("Familles", plan_df['famille'].nunique() if 'famille' in plan_df.columns else "N/A")
-        st.divider()
+    pc_tab1, pc_tab2, pc_tab3, pc_tab4 = st.tabs(["📋 Consulter", "➕ Ajouter", "✏️ Modifier", "🗑️ Supprimer"])
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            cl_f = st.selectbox("Classe", ['Toutes'] + sorted(plan_df['classe'].unique().tolist()))
-        with col2:
-            fam_f = st.selectbox("Famille", ['Toutes'] + sorted(plan_df['famille'].unique().tolist()))
-        with col3:
-            search = st.text_input("🔍 Recherche")
+    # ── ONGLET CONSULTER ─────────────────────────────────────────
+    with pc_tab1:
+        if not plan_df.empty:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Comptes", len(plan_df))
+            c2.metric("Classes", plan_df['classe'].nunique() if 'classe' in plan_df.columns else "N/A")
+            c3.metric("Familles", plan_df['famille'].nunique() if 'famille' in plan_df.columns else "N/A")
+            st.divider()
 
-        filt = plan_df.copy()
-        if cl_f != 'Toutes': filt = filt[filt['classe'] == cl_f]
-        if fam_f != 'Toutes': filt = filt[filt['famille'] == fam_f]
-        if search:
-            mask = filt['compte'].astype(str).str.contains(search, case=False, na=False)
-            if 'libelle_compte' in filt.columns:
-                mask |= filt['libelle_compte'].astype(str).str.contains(search, case=False, na=False)
-            filt = filt[mask]
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                cl_f = st.selectbox("Classe", ['Toutes'] + sorted(plan_df['classe'].dropna().unique().tolist()), key="pc_cl_f")
+            with col2:
+                fam_f = st.selectbox("Famille", ['Toutes'] + sorted(plan_df['famille'].dropna().unique().tolist()), key="pc_fam_f")
+            with col3:
+                search = st.text_input("🔍 Recherche", key="pc_search")
 
-        disp_cols = [c for c in ['compte','libelle_compte','classe','famille'] if c in filt.columns]
-        st.dataframe(filt[disp_cols].sort_values('compte' if 'compte' in filt.columns else disp_cols[0]),
-            use_container_width=True, hide_index=True)
-        st.download_button("📥 Exporter CSV",
-            filt.to_csv(index=False).encode('utf-8'),
-            f"plan_comptable_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+            filt = plan_df.copy()
+            if cl_f != 'Toutes': filt = filt[filt['classe'] == cl_f]
+            if fam_f != 'Toutes': filt = filt[filt['famille'] == fam_f]
+            if search:
+                mask = filt['compte'].astype(str).str.contains(search, case=False, na=False)
+                if 'libelle_compte' in filt.columns:
+                    mask |= filt['libelle_compte'].astype(str).str.contains(search, case=False, na=False)
+                filt = filt[mask]
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if 'classe' in filt.columns:
-                cl_cnt = filt['classe'].value_counts().reset_index()
-                cl_cnt.columns = ['Classe','Nb comptes']
-                fig = px.bar(cl_cnt, x='Classe', y='Nb comptes', title='Comptes par classe', text='Nb comptes')
-                st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            if 'famille' in filt.columns:
-                fam_cnt = filt['famille'].value_counts().reset_index()
-                fam_cnt.columns = ['Famille','Nb comptes']
-                fig = px.pie(fam_cnt, values='Nb comptes', names='Famille', title='Comptes par famille')
-                st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("⚠️ Aucune donnée dans le plan comptable.")
+            disp_cols = [c for c in ['compte','libelle_compte','classe','famille'] if c in filt.columns]
+            st.dataframe(
+                filt[disp_cols].sort_values('compte' if 'compte' in filt.columns else disp_cols[0]),
+                use_container_width=True, hide_index=True
+            )
+            st.download_button("📥 Exporter CSV",
+                filt.to_csv(index=False).encode('utf-8'),
+                f"plan_comptable_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if 'classe' in filt.columns:
+                    cl_cnt = filt['classe'].value_counts().reset_index()
+                    cl_cnt.columns = ['Classe','Nb comptes']
+                    fig = px.bar(cl_cnt, x='Classe', y='Nb comptes', title='Comptes par classe', text='Nb comptes')
+                    st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                if 'famille' in filt.columns:
+                    fam_cnt = filt['famille'].value_counts().reset_index()
+                    fam_cnt.columns = ['Famille','Nb comptes']
+                    fig = px.pie(fam_cnt, values='Nb comptes', names='Famille', title='Comptes par famille')
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("⚠️ Aucune donnée dans le plan comptable.")
+
+    # ── ONGLET AJOUTER ───────────────────────────────────────────
+    with pc_tab2:
+        st.subheader("➕ Ajouter un compte")
+        classes_ex  = sorted(plan_df['classe'].dropna().unique().tolist()) if not plan_df.empty else []
+        familles_ex = sorted(plan_df['famille'].dropna().unique().tolist()) if not plan_df.empty else []
+
+        with st.form("form_add_pc"):
+            col1, col2 = st.columns(2)
+            with col1:
+                new_compte   = st.text_input("Numéro de compte *", placeholder="ex: 60201500")
+                new_libelle  = st.text_input("Libellé *", placeholder="ex: EAU FROIDE GENERALE")
+            with col2:
+                # Classe : existante ou nouvelle
+                use_new_cl = st.checkbox("Nouvelle classe", key="new_cl_chk")
+                if use_new_cl:
+                    new_classe = st.text_input("Nouvelle classe *", placeholder="ex: 1C")
+                else:
+                    new_classe = st.selectbox("Classe *", classes_ex, key="pc_add_cl")
+                # Famille : existante ou nouvelle
+                use_new_fam = st.checkbox("Nouvelle famille", key="new_fam_chk")
+                if use_new_fam:
+                    new_famille = st.text_input("Nouvelle famille *", placeholder="ex: 6025")
+                else:
+                    new_famille = st.selectbox("Famille *", familles_ex, key="pc_add_fam")
+
+            submitted_add = st.form_submit_button("✅ Ajouter le compte", use_container_width=True)
+            if submitted_add:
+                if not new_compte or not new_libelle or not new_classe or not new_famille:
+                    st.error("⚠️ Tous les champs marqués * sont obligatoires.")
+                elif not plan_df.empty and new_compte in plan_df['compte'].astype(str).values:
+                    st.error(f"⚠️ Le compte **{new_compte}** existe déjà.")
+                else:
+                    try:
+                        supabase.table('plan_comptable').insert({
+                            'compte':        new_compte,
+                            'libelle_compte': new_libelle.upper().strip(),
+                            'classe':        new_classe.strip(),
+                            'famille':       new_famille.strip(),
+                        }).execute()
+                        st.success(f"✅ Compte **{new_compte} — {new_libelle.upper()}** ajouté.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Erreur : {e}")
+
+    # ── ONGLET MODIFIER ──────────────────────────────────────────
+    with pc_tab3:
+        st.subheader("✏️ Modifier un compte")
+        if plan_df.empty:
+            st.warning("⚠️ Aucun compte disponible.")
+        else:
+            mod_tab1, mod_tab2, mod_tab3 = st.tabs(["📝 Compte individuel", "🏷️ Renommer une classe", "📁 Renommer une famille"])
+
+            # ── Modifier un compte individuel
+            with mod_tab1:
+                choix_comptes = plan_df.apply(
+                    lambda r: f"{r['compte']} — {r['libelle_compte']} ({r['classe']})", axis=1
+                ).tolist()
+                sel_compte = st.selectbox("Sélectionner le compte à modifier", choix_comptes, key="pc_mod_sel")
+                sel_id = int(plan_df.iloc[choix_comptes.index(sel_compte)]['id'])
+                sel_row = plan_df[plan_df['id'] == sel_id].iloc[0]
+
+                with st.form("form_mod_pc"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        mod_compte  = st.text_input("Numéro de compte", value=str(sel_row['compte']))
+                        mod_libelle = st.text_input("Libellé", value=str(sel_row['libelle_compte']))
+                    with col2:
+                        classes_mod = sorted(plan_df['classe'].dropna().unique().tolist())
+                        idx_cl = classes_mod.index(sel_row['classe']) if sel_row['classe'] in classes_mod else 0
+                        mod_classe  = st.selectbox("Classe", classes_mod, index=idx_cl, key="pc_mod_cl")
+                        familles_mod = sorted(plan_df['famille'].dropna().unique().tolist())
+                        idx_fam = familles_mod.index(sel_row['famille']) if sel_row['famille'] in familles_mod else 0
+                        mod_famille = st.selectbox("Famille", familles_mod, index=idx_fam, key="pc_mod_fam")
+
+                    submitted_mod = st.form_submit_button("💾 Enregistrer les modifications", use_container_width=True)
+                    if submitted_mod:
+                        try:
+                            supabase.table('plan_comptable').update({
+                                'compte':        mod_compte.strip(),
+                                'libelle_compte': mod_libelle.upper().strip(),
+                                'classe':        mod_classe.strip(),
+                                'famille':       mod_famille.strip(),
+                            }).eq('id', sel_id).execute()
+                            st.success(f"✅ Compte **{mod_compte}** mis à jour.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Erreur : {e}")
+
+            # ── Renommer une classe (tous les comptes de la classe)
+            with mod_tab2:
+                st.info("ℹ️ Renomme la classe sur **tous les comptes** qui l'utilisent.")
+                classes_list = sorted(plan_df['classe'].dropna().unique().tolist())
+                col1, col2 = st.columns(2)
+                with col1:
+                    cl_ancien = st.selectbox("Classe à renommer", classes_list, key="cl_rename_old")
+                    nb_cl = len(plan_df[plan_df['classe'] == cl_ancien])
+                    st.caption(f"{nb_cl} compte(s) affectés")
+                with col2:
+                    cl_nouveau = st.text_input("Nouveau nom de classe", key="cl_rename_new")
+                if st.button("✏️ Renommer la classe", key="btn_rename_cl", use_container_width=True):
+                    if not cl_nouveau.strip():
+                        st.error("⚠️ Saisir le nouveau nom.")
+                    elif cl_nouveau.strip() in classes_list and cl_nouveau.strip() != cl_ancien:
+                        st.error(f"⚠️ La classe **{cl_nouveau}** existe déjà.")
+                    else:
+                        try:
+                            supabase.table('plan_comptable').update({'classe': cl_nouveau.strip()}).eq('classe', cl_ancien).execute()
+                            st.success(f"✅ Classe **{cl_ancien}** → **{cl_nouveau}** ({nb_cl} comptes mis à jour).")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ {e}")
+
+            # ── Renommer une famille
+            with mod_tab3:
+                st.info("ℹ️ Renomme la famille sur **tous les comptes** qui l'utilisent.")
+                familles_list = sorted(plan_df['famille'].dropna().unique().tolist())
+                col1, col2 = st.columns(2)
+                with col1:
+                    fam_ancien = st.selectbox("Famille à renommer", familles_list, key="fam_rename_old")
+                    nb_fam = len(plan_df[plan_df['famille'] == fam_ancien])
+                    st.caption(f"{nb_fam} compte(s) affectés")
+                with col2:
+                    fam_nouveau = st.text_input("Nouveau nom de famille", key="fam_rename_new")
+                if st.button("✏️ Renommer la famille", key="btn_rename_fam", use_container_width=True):
+                    if not fam_nouveau.strip():
+                        st.error("⚠️ Saisir le nouveau nom.")
+                    elif fam_nouveau.strip() in familles_list and fam_nouveau.strip() != fam_ancien:
+                        st.error(f"⚠️ La famille **{fam_nouveau}** existe déjà.")
+                    else:
+                        try:
+                            supabase.table('plan_comptable').update({'famille': fam_nouveau.strip()}).eq('famille', fam_ancien).execute()
+                            st.success(f"✅ Famille **{fam_ancien}** → **{fam_nouveau}** ({nb_fam} comptes mis à jour).")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ {e}")
+
+    # ── ONGLET SUPPRIMER ─────────────────────────────────────────
+    with pc_tab4:
+        st.subheader("🗑️ Supprimer")
+        if plan_df.empty:
+            st.warning("⚠️ Aucun compte disponible.")
+        else:
+            del_tab1, del_tab2, del_tab3 = st.tabs(["🗑️ Un compte", "🗑️ Une classe entière", "🗑️ Une famille entière"])
+
+            # ── Supprimer un compte
+            with del_tab1:
+                del_comptes = plan_df.apply(
+                    lambda r: f"{r['compte']} — {r['libelle_compte']} ({r['classe']})", axis=1
+                ).tolist()
+                sel_del = st.selectbox("Compte à supprimer", del_comptes, key="pc_del_sel")
+                sel_del_id  = int(plan_df.iloc[del_comptes.index(sel_del)]['id'])
+                sel_del_row = plan_df[plan_df['id'] == sel_del_id].iloc[0]
+
+                st.warning(f"⚠️ Supprimer **{sel_del_row['compte']} — {sel_del_row['libelle_compte']}** ?  "
+                           f"Cette action est irréversible.")
+                col1, col2 = st.columns(2)
+                with col1:
+                    confirm_del = st.checkbox("Je confirme la suppression", key="chk_del_pc")
+                with col2:
+                    if st.button("🗑️ Supprimer ce compte", key="btn_del_pc",
+                                 disabled=not confirm_del, use_container_width=True):
+                        try:
+                            supabase.table('plan_comptable').delete().eq('id', sel_del_id).execute()
+                            st.success(f"✅ Compte **{sel_del_row['compte']}** supprimé.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ {e}")
+
+            # ── Supprimer une classe entière
+            with del_tab2:
+                classes_del = sorted(plan_df['classe'].dropna().unique().tolist())
+                cl_del = st.selectbox("Classe à supprimer", classes_del, key="cl_del_sel")
+                nb_cl_del = len(plan_df[plan_df['classe'] == cl_del])
+                comptes_cl = plan_df[plan_df['classe'] == cl_del]['compte'].tolist()
+                st.warning(f"⚠️ Supprimer la classe **{cl_del}** et ses **{nb_cl_del} comptes** : "
+                           f"{', '.join(comptes_cl[:8])}{'...' if len(comptes_cl) > 8 else ''} ?")
+                col1, col2 = st.columns(2)
+                with col1:
+                    confirm_cl_del = st.checkbox("Je confirme la suppression de la classe", key="chk_del_cl")
+                with col2:
+                    if st.button(f"🗑️ Supprimer classe {cl_del} ({nb_cl_del} comptes)",
+                                 key="btn_del_cl", disabled=not confirm_cl_del, use_container_width=True):
+                        try:
+                            supabase.table('plan_comptable').delete().eq('classe', cl_del).execute()
+                            st.success(f"✅ Classe **{cl_del}** et {nb_cl_del} comptes supprimés.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ {e}")
+
+            # ── Supprimer une famille entière
+            with del_tab3:
+                familles_del = sorted(plan_df['famille'].dropna().unique().tolist())
+                fam_del = st.selectbox("Famille à supprimer", familles_del, key="fam_del_sel")
+                nb_fam_del = len(plan_df[plan_df['famille'] == fam_del])
+                comptes_fam = plan_df[plan_df['famille'] == fam_del]['compte'].tolist()
+                st.warning(f"⚠️ Supprimer la famille **{fam_del}** et ses **{nb_fam_del} comptes** : "
+                           f"{', '.join(comptes_fam[:8])}{'...' if len(comptes_fam) > 8 else ''} ?")
+                col1, col2 = st.columns(2)
+                with col1:
+                    confirm_fam_del = st.checkbox("Je confirme la suppression de la famille", key="chk_del_fam")
+                with col2:
+                    if st.button(f"🗑️ Supprimer famille {fam_del} ({nb_fam_del} comptes)",
+                                 key="btn_del_fam", disabled=not confirm_fam_del, use_container_width=True):
+                        try:
+                            supabase.table('plan_comptable').delete().eq('famille', fam_del).execute()
+                            st.success(f"✅ Famille **{fam_del}** et {nb_fam_del} comptes supprimés.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ {e}")
 
 st.divider()
 st.markdown("<div style='text-align: center; color: #666;'>🏢 Gestion de Copropriété — v2.0</div>", unsafe_allow_html=True)
