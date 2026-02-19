@@ -1195,8 +1195,10 @@ elif menu == "🏛️ Loi Alur":
     # ---- MÉTRIQUES GLOBALES ----
     if not alur_df.empty:
         alur_df['date'] = pd.to_datetime(alur_df['date'])
-        alur_df['appels_fonds'] = pd.to_numeric(alur_df.get('appels_fonds', 0), errors='coerce').fillna(0)
-        alur_df['utilisation'] = pd.to_numeric(alur_df.get('utilisation', 0), errors='coerce').fillna(0)
+        alur_df['appels_fonds'] = pd.to_numeric(alur_df['appels_fonds'], errors='coerce').fillna(0)
+        alur_df['utilisation'] = pd.to_numeric(alur_df['utilisation'], errors='coerce').fillna(0)
+        if 'commentaire' in alur_df.columns:
+            alur_df['commentaire'] = alur_df['commentaire'].fillna('').astype(str).replace('None', '')
         total_appels = alur_df['appels_fonds'].sum()
         total_util = alur_df['utilisation'].sum()
         solde = total_appels - total_util
@@ -1226,23 +1228,17 @@ elif menu == "🏛️ Loi Alur":
             alur_display = alur_df.copy().sort_values('date')
             alur_display['Solde cumulé (€)'] = (alur_display['appels_fonds'] - alur_display['utilisation']).cumsum().round(2)
             alur_display['date_fmt'] = alur_display['date'].dt.strftime('%d/%m/%Y')
+            # Masquer les 0 : afficher vide si valeur = 0
+            alur_display['Appels (€)'] = alur_display['appels_fonds'].apply(
+                lambda x: x if x > 0 else None)
+            alur_display['Utilisation (€)'] = alur_display['utilisation'].apply(
+                lambda x: x if x > 0 else None)
+            alur_display['Commentaire'] = alur_display.get('commentaire', pd.Series(['']*len(alur_display))).fillna('').replace('None','')
 
-            # Colorisation
-            def style_row(row):
-                if row['appels_fonds'] > 0:
-                    return ['background-color: rgba(46,204,113,0.1)'] * len(row)
-                elif row['utilisation'] > 0:
-                    return ['background-color: rgba(231,76,60,0.1)'] * len(row)
-                return [''] * len(row)
-
-            cols_display = ['date_fmt','designation','appels_fonds','utilisation','commentaire','Solde cumulé (€)']
+            cols_display = ['date_fmt','designation','Appels (€)','Utilisation (€)','Commentaire','Solde cumulé (€)']
             cols_display = [c for c in cols_display if c in alur_display.columns]
             st.dataframe(
-                alur_display[cols_display].rename(columns={
-                    'date_fmt': 'Date', 'designation': 'Désignation',
-                    'appels_fonds': 'Appels (€)', 'utilisation': 'Utilisation (€)',
-                    'commentaire': 'Commentaire'
-                }),
+                alur_display[cols_display].rename(columns={'date_fmt': 'Date', 'designation': 'Désignation'}),
                 use_container_width=True, hide_index=True,
                 column_config={
                     'Appels (€)': st.column_config.NumberColumn(format="%,.2f"),
