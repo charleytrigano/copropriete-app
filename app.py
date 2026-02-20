@@ -1071,7 +1071,7 @@ elif menu == "📝 Dépenses":
                                 uploaded = st.file_uploader(
                                     "📤 Uploader la facture",
                                     type=['pdf','png','jpg','jpeg','webp'],
-                                    key=f"upload_{dep_id}",
+                                    key=f"upload_inline_{dep_id}",
                                     help="PDF ou image (JPG, PNG)"
                                 )
                                 if uploaded:
@@ -1526,7 +1526,7 @@ elif menu == "📝 Dépenses":
                             uploaded = st.file_uploader(
                                 "📤 Uploader la facture",
                                 type=['pdf','png','jpg','jpeg','webp'],
-                                key=f"upload_{dep_id}",
+                                key=f"upload_detail_{dep_id}",
                                 label_visibility="visible"
                             )
                             if uploaded:
@@ -1691,7 +1691,7 @@ elif menu == "👥 Copropriétaires":
                     uploaded = st.file_uploader(
                         "PDF ou image (JPG, PNG)",
                         type=["pdf","jpg","jpeg","png"],
-                        key=f"fac_up_{sel_id}"
+                        key=f"fac_up_tab_{sel_id}"
                     )
                     if uploaded:
                         col_u1, col_u2 = st.columns(2)
