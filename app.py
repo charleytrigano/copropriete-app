@@ -71,28 +71,64 @@ def get_facture_bytes(storage_path):
         return None
 
 def afficher_facture(storage_path, height=600):
-    """Affiche PDF en base64 (évite blocage iframe Chrome) ou image."""
+    """Affiche PDF via PDF.js (contourne les blocages Chrome) ou image."""
     import base64
+    import streamlit.components.v1 as components
     ext = str(storage_path).rsplit('.', 1)[-1].lower()
     file_bytes = get_facture_bytes(storage_path)
     if file_bytes is None:
-        st.warning("⚠️ Impossible de charger la facture.")
+        st.warning("⚠️ Impossible de charger la facture depuis Supabase.")
         return
+    fname = str(storage_path).split('/')[-1]
+    mime = 'application/pdf' if ext == 'pdf' else f'image/{ext}'
+    # Bouton téléchargement toujours disponible
+    st.download_button("⬇️ Télécharger la facture", data=file_bytes,
+                       file_name=fname, mime=mime, key=f"dl_{abs(hash(storage_path))}")
     if ext == 'pdf':
         b64 = base64.b64encode(file_bytes).decode('utf-8')
-        st.markdown(
-            f'<iframe src="data:application/pdf;base64,{b64}" ' +
-            f'width="100%" height="{height}px" ' +
-            f'style="border:1px solid #444;border-radius:6px;"></iframe>',
-            unsafe_allow_html=True
-        )
+        # PDF.js via CDN — fonctionne sans restriction Chrome
+        pdf_html = f"""
+<div id="pdf-container" style="width:100%;height:{height}px;border:1px solid #444;
+     border-radius:6px;overflow:auto;background:#fff;">
+  <canvas id="pdf-canvas"></canvas>
+</div>
+<div style="margin-top:6px;text-align:center;color:#aaa;font-size:0.85em;">
+  Page <span id="cur-page">1</span> / <span id="tot-pages">?</span>
+  &nbsp;
+  <button onclick="changePage(-1)" style="margin:0 4px;padding:2px 10px;cursor:pointer;">◀</button>
+  <button onclick="changePage(1)"  style="margin:0 4px;padding:2px 10px;cursor:pointer;">▶</button>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const pdfData = atob('{b64}');
+  const arr = new Uint8Array(pdfData.length);
+  for (let i=0;i<pdfData.length;i++) arr[i]=pdfData.charCodeAt(i);
+  let pdfDoc=null, curPage=1;
+  const canvas=document.getElementById('pdf-canvas');
+  const ctx=canvas.getContext('2d');
+  function renderPage(n) {{
+    pdfDoc.getPage(n).then(page => {{
+      const vp = page.getViewport({{scale: 1.5}});
+      canvas.width=vp.width; canvas.height=vp.height;
+      page.render({{canvasContext:ctx,viewport:vp}});
+      document.getElementById('cur-page').textContent=n;
+    }});
+  }}
+  function changePage(d) {{
+    const n=curPage+d;
+    if(n>=1 && n<=pdfDoc.numPages){{ curPage=n; renderPage(n); }}
+  }}
+  pdfjsLib.getDocument({{data:arr}}).promise.then(doc=>{{
+    pdfDoc=doc;
+    document.getElementById('tot-pages').textContent=doc.numPages;
+    renderPage(1);
+  }});
+</script>"""
+        components.html(pdf_html, height=height + 50, scrolling=False)
     else:
         st.image(file_bytes, use_container_width=True)
-    # Bouton téléchargement
-    mime = 'application/pdf' if ext == 'pdf' else f'image/{ext}'
-    fname = str(storage_path).split('/')[-1]
-    st.download_button("⬇️ Télécharger", data=file_bytes, file_name=fname, mime=mime,
-                       key=f"dl_{hash(storage_path)}")
 
 def delete_facture(dep_id, storage_path):
     supabase.storage.from_('factures').remove([storage_path])
