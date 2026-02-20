@@ -55,11 +55,44 @@ def upload_facture(dep_id, file_bytes, filename):
     return storage_path
 
 def get_facture_url(storage_path):
+    """Retourne l'URL signée (1h) de la facture."""
     try:
         r = supabase.storage.from_('factures').create_signed_url(storage_path, 3600)
         return r.get('signedURL') or r.get('signedUrl', '')
     except:
         return ''
+
+def get_facture_bytes(storage_path):
+    """Télécharge les bytes du fichier depuis Supabase Storage."""
+    try:
+        data = supabase.storage.from_('factures').download(storage_path)
+        return bytes(data)
+    except:
+        return None
+
+def afficher_facture(storage_path, height=600):
+    """Affiche PDF en base64 (évite blocage iframe Chrome) ou image."""
+    import base64
+    ext = str(storage_path).rsplit('.', 1)[-1].lower()
+    file_bytes = get_facture_bytes(storage_path)
+    if file_bytes is None:
+        st.warning("⚠️ Impossible de charger la facture.")
+        return
+    if ext == 'pdf':
+        b64 = base64.b64encode(file_bytes).decode('utf-8')
+        st.markdown(
+            f'<iframe src="data:application/pdf;base64,{b64}" ' +
+            f'width="100%" height="{height}px" ' +
+            f'style="border:1px solid #444;border-radius:6px;"></iframe>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.image(file_bytes, use_container_width=True)
+    # Bouton téléchargement
+    mime = 'application/pdf' if ext == 'pdf' else f'image/{ext}'
+    fname = str(storage_path).split('/')[-1]
+    st.download_button("⬇️ Télécharger", data=file_bytes, file_name=fname, mime=mime,
+                       key=f"dl_{hash(storage_path)}")
 
 def delete_facture(dep_id, storage_path):
     supabase.storage.from_('factures').remove([storage_path])
@@ -1099,28 +1132,7 @@ elif menu == "📝 Dépenses":
                             with col_fac:
                                 st.markdown("**🧾 Facture**")
                                 if a_facture:
-                                    url = get_facture_url(str(fp))
-                                    if url:
-                                        ext = str(fp).rsplit('.', 1)[-1].lower()
-                                        if ext == 'pdf':
-                                            st.markdown(
-                                                f"<a href='{url}' target='_blank'>"
-                                                f"<button style='background:#2196F3;color:white;border:none;"
-                                                f"padding:7px 14px;border-radius:4px;cursor:pointer;"
-                                                f"margin-bottom:8px;'>📄 Ouvrir en PDF</button></a>",
-                                                unsafe_allow_html=True)
-                                            st.markdown(
-                                                f"<iframe src='{url}' width='100%' height='520px' "
-                                                f"style='border:1px solid #444;border-radius:4px;'>"
-                                                f"</iframe>",
-                                                unsafe_allow_html=True)
-                                        else:
-                                            st.image(url, use_column_width=True)
-                                            st.markdown(
-                                                f"<a href='{url}' target='_blank'>🔗 Plein écran</a>",
-                                                unsafe_allow_html=True)
-                                    else:
-                                        st.warning("⚠️ Lien expiré ou fichier inaccessible.")
+                                    afficher_facture(str(fp), height=520)
                                 else:
                                     st.markdown(
                                         "<div style='height:200px;border:2px dashed #555;"
@@ -1556,33 +1568,7 @@ elif menu == "📝 Dépenses":
                         with col_fac:
                             st.markdown("**🧾 Facture**")
                             if a_facture:
-                                url = get_facture_url(str(fp))
-                                if url:
-                                    ext = str(fp).rsplit('.', 1)[-1].lower()
-                                    if ext == 'pdf':
-                                        # Lien cliquable + iframe pour PDF
-                                        st.markdown(
-                                            f"<a href='{url}' target='_blank' style='text-decoration:none;'>"
-                                            f"<button style='background:#2196F3;color:white;border:none;"
-                                            f"padding:8px 16px;border-radius:4px;cursor:pointer;'>"
-                                            f"📄 Ouvrir le PDF dans un nouvel onglet</button></a>",
-                                            unsafe_allow_html=True
-                                        )
-                                        st.markdown(
-                                            f"<iframe src='{url}' width='100%' height='500px' "
-                                            f"style='border:1px solid #444;border-radius:4px;margin-top:8px;'>"
-                                            f"</iframe>",
-                                            unsafe_allow_html=True
-                                        )
-                                    else:
-                                        st.image(url, use_column_width=True)
-                                        st.markdown(
-                                            f"<a href='{url}' target='_blank'>🔗 Ouvrir en plein écran</a>",
-                                            unsafe_allow_html=True
-                                        )
-                                else:
-                                    st.warning("⚠️ Lien expiré ou fichier inaccessible.")
-                                    st.caption(f"Chemin : `{fp}`")
+                                afficher_facture(str(fp), height=500)
                             else:
                                 st.markdown(
                                     "<div style='height:200px;border:2px dashed #555;border-radius:8px;"
@@ -1723,23 +1709,7 @@ elif menu == "👥 Copropriétaires":
                     st.markdown("#### 📄 Facture")
                     if has_fac:
                         try:
-                            fac_url = get_facture_url(str(fac_path))
-                            ext = str(fac_path).rsplit('.', 1)[-1].lower()
-                            if fac_url:
-                                if ext == 'pdf':
-                                    st.markdown(
-                                        f"<iframe src='{fac_url}' width='100%' height='620px' "
-                                        f"style='border:1px solid #444;border-radius:6px;'></iframe>",
-                                        unsafe_allow_html=True)
-                                else:
-                                    st.image(fac_url, use_container_width=True)
-                                st.download_button(
-                                    "⬇️ Télécharger",
-                                    data=fac_url,
-                                    file_name=str(fac_path).split('/')[-1],
-                                    key=f"dl_fac_{sel_id}")
-                            else:
-                                st.warning("⚠️ URL non disponible — vérifiez le bucket Supabase.")
+                            afficher_facture(str(fac_path), height=620)
                         except Exception as e:
                             st.error(f"❌ Impossible de charger : {e}")
                     else:
