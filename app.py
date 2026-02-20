@@ -978,15 +978,157 @@ elif menu == "📝 Dépenses":
         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📋 Consulter", "✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer", "🏗️ Travaux Votés", "📎 Factures"])
 
         with tab1:
-            disp = dep_f[['date','compte','libelle_compte','fournisseur','montant_du','classe','commentaire']].copy().sort_values('date', ascending=False)
-            disp['date'] = disp['date'].dt.strftime('%d/%m/%Y')
-            # Ajouter indicateur facture
-            if 'facture_path' in dep_f.columns:
-                disp['📎'] = dep_f.sort_values('date', ascending=False)['facture_path'].apply(
-                    lambda x: '✅' if x and str(x) not in ('','None','nan') else '—')
-            st.dataframe(disp, use_container_width=True, hide_index=True,
-                column_config={"montant_du": st.column_config.NumberColumn("Montant (€)", format="%,.2f")})
-            st.download_button("📥 Exporter CSV", dep_f.to_csv(index=False).encode('utf-8'), f"depenses_{annee_dep}.csv", "text/csv")
+            if dep_f.empty:
+                st.info("Aucune dépense pour cette période.")
+            else:
+                dep_show = dep_f.copy().sort_values('date', ascending=False)
+                dep_show['montant_du'] = pd.to_numeric(dep_show['montant_du'], errors='coerce').fillna(0)
+                has_facture_col = 'facture_path' in dep_show.columns
+
+                # Barre de contrôle
+                col_vue1, col_vue2 = st.columns([3, 1])
+                with col_vue1:
+                    vue_mode = st.radio("Affichage", ["📋 Tableau", "📎 Vis-à-vis factures"],
+                        horizontal=True, key="dep_vue_mode")
+                with col_vue2:
+                    st.download_button("📥 CSV",
+                        dep_f.to_csv(index=False).encode('utf-8'),
+                        f"depenses_{annee_dep}.csv", "text/csv",
+                        use_container_width=True)
+
+                # ── MODE TABLEAU ───────────────────────────────────
+                if vue_mode == "📋 Tableau":
+                    disp = dep_show[['date','compte','libelle_compte','fournisseur','montant_du','classe','commentaire']].copy()
+                    disp['date'] = disp['date'].dt.strftime('%d/%m/%Y')
+                    if has_facture_col:
+                        disp['📎'] = dep_show['facture_path'].apply(
+                            lambda x: '✅' if x and str(x) not in ('','None','nan') else '—')
+                    st.dataframe(disp, use_container_width=True, hide_index=True,
+                        column_config={"montant_du": st.column_config.NumberColumn("Montant (€)", format="%,.2f")})
+
+                # ── MODE VIS-À-VIS FACTURES ────────────────────────
+                else:
+                    # Filtres
+                    col_f1, col_f2 = st.columns(2)
+                    with col_f1:
+                        fac_filtre = st.radio("Filtrer", ["Toutes", "✅ Avec facture", "❌ Sans facture"],
+                            horizontal=True, key="fac_filtre_tab1")
+                    with col_f2:
+                        fac_search2 = st.text_input("🔍 Fournisseur", key="fac_search_tab1")
+
+                    dep_vis = dep_show.copy()
+                    if has_facture_col:
+                        has_fac_mask = dep_vis['facture_path'].apply(
+                            lambda x: bool(x and str(x) not in ('', 'None', 'nan')))
+                        if fac_filtre == "✅ Avec facture":
+                            dep_vis = dep_vis[has_fac_mask]
+                        elif fac_filtre == "❌ Sans facture":
+                            dep_vis = dep_vis[~has_fac_mask]
+                    if fac_search2:
+                        dep_vis = dep_vis[dep_vis['fournisseur'].astype(str).str.contains(
+                            fac_search2, case=False, na=False)]
+
+                    # Métriques
+                    if has_facture_col:
+                        nb_avec = dep_show['facture_path'].apply(
+                            lambda x: bool(x and str(x) not in ('', 'None', 'nan'))).sum()
+                        mc1, mc2, mc3 = st.columns(3)
+                        mc1.metric("Total dépenses", len(dep_show))
+                        mc2.metric("✅ Avec facture", int(nb_avec))
+                        mc3.metric("❌ Sans facture", len(dep_show) - int(nb_avec))
+                        st.divider()
+
+                    # Ligne par ligne en vis-à-vis
+                    for _, row in dep_vis.iterrows():
+                        dep_id = int(row['id'])
+                        fp = row.get('facture_path', '') if has_facture_col else ''
+                        a_facture = bool(fp and str(fp) not in ('', 'None', 'nan'))
+                        badge = "✅" if a_facture else "❌"
+                        date_fmt = row['date'].strftime('%d/%m/%Y') if hasattr(row['date'], 'strftime') else str(row['date'])
+
+                        with st.expander(
+                            f"{badge}  {date_fmt}  ·  {row.get('fournisseur','')}  ·  "
+                            f"{row['montant_du']:,.2f} €  ·  {str(row.get('libelle_compte',''))[:40]}",
+                            expanded=False
+                        ):
+                            col_dep, col_fac = st.columns([1, 2])
+
+                            # ── Infos dépense + upload ──────────────
+                            with col_dep:
+                                st.markdown("**📄 Dépense**")
+                                st.markdown(f"""
+| | |
+|---|---|
+| **Date** | {date_fmt} |
+| **Compte** | {row.get('compte','')} |
+| **Libellé** | {str(row.get('libelle_compte',''))[:45]} |
+| **Fournisseur** | {row.get('fournisseur','')} |
+| **Montant** | **{row['montant_du']:,.2f} €** |
+| **Classe** | {row.get('classe','')} |
+| **Commentaire** | {row.get('commentaire','') or '—'} |
+""")
+                                st.markdown("---")
+                                uploaded = st.file_uploader(
+                                    "📤 Uploader la facture",
+                                    type=['pdf','png','jpg','jpeg','webp'],
+                                    key=f"upload_{dep_id}",
+                                    help="PDF ou image (JPG, PNG)"
+                                )
+                                if uploaded:
+                                    if st.button("💾 Enregistrer la facture",
+                                                 key=f"save_fac_{dep_id}",
+                                                 use_container_width=True, type="primary"):
+                                        try:
+                                            upload_facture(dep_id, uploaded.getvalue(), uploaded.name)
+                                            st.success("✅ Facture enregistrée.")
+                                            st.cache_data.clear(); st.rerun()
+                                        except Exception as e:
+                                            st.error(f"❌ {e}")
+                                if a_facture:
+                                    if st.button("🗑️ Supprimer la facture",
+                                                 key=f"del_fac_{dep_id}",
+                                                 use_container_width=True):
+                                        try:
+                                            delete_facture(dep_id, str(fp))
+                                            st.success("✅ Supprimée.")
+                                            st.cache_data.clear(); st.rerun()
+                                        except Exception as e:
+                                            st.error(f"❌ {e}")
+
+                            # ── Aperçu facture ──────────────────────
+                            with col_fac:
+                                st.markdown("**🧾 Facture**")
+                                if a_facture:
+                                    url = get_facture_url(str(fp))
+                                    if url:
+                                        ext = str(fp).rsplit('.', 1)[-1].lower()
+                                        if ext == 'pdf':
+                                            st.markdown(
+                                                f"<a href='{url}' target='_blank'>"
+                                                f"<button style='background:#2196F3;color:white;border:none;"
+                                                f"padding:7px 14px;border-radius:4px;cursor:pointer;"
+                                                f"margin-bottom:8px;'>📄 Ouvrir en PDF</button></a>",
+                                                unsafe_allow_html=True)
+                                            st.markdown(
+                                                f"<iframe src='{url}' width='100%' height='520px' "
+                                                f"style='border:1px solid #444;border-radius:4px;'>"
+                                                f"</iframe>",
+                                                unsafe_allow_html=True)
+                                        else:
+                                            st.image(url, use_column_width=True)
+                                            st.markdown(
+                                                f"<a href='{url}' target='_blank'>🔗 Plein écran</a>",
+                                                unsafe_allow_html=True)
+                                    else:
+                                        st.warning("⚠️ Lien expiré ou fichier inaccessible.")
+                                else:
+                                    st.markdown(
+                                        "<div style='height:200px;border:2px dashed #555;"
+                                        "border-radius:8px;display:flex;align-items:center;"
+                                        "justify-content:center;color:#888;font-size:0.95em;'>"
+                                        "📂 Aucune facture — uploadez-en une à gauche"
+                                        "</div>",
+                                        unsafe_allow_html=True)
 
         with tab2:
             dep_edit_df = dep_f[['id','date','compte','fournisseur','montant_du','commentaire']].copy()
@@ -1315,9 +1457,11 @@ elif menu == "📝 Dépenses":
                 dep_fac = dep_f.copy()
                 dep_fac['montant_du'] = pd.to_numeric(dep_fac['montant_du'], errors='coerce').fillna(0)
                 dep_fac['date_fmt'] = dep_fac['date'].dt.strftime('%d/%m/%Y')
-                has_facture = dep_fac['facture_path'].apply(
-                    lambda x: x and str(x) not in ('','None','nan')
-                ) if 'facture_path' in dep_fac.columns else pd.Series([False]*len(dep_fac))
+                has_facture = (
+                    dep_fac['facture_path'].apply(
+                        lambda x: bool(x) and str(x) not in ('', 'None', 'nan', 'NaN')
+                    ).fillna(False).astype(bool)
+                ) if 'facture_path' in dep_fac.columns else pd.Series([False] * len(dep_fac), dtype=bool)
 
                 # Filtre par statut facture
                 col_f1, col_f2 = st.columns(2)
