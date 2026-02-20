@@ -43,6 +43,28 @@ def get_depenses(date_debut=None, date_fin=None):
     except Exception as e:
         st.error(f"❌ Erreur dépenses: {e}"); return pd.DataFrame()
 
+def upload_facture(dep_id, file_bytes, filename):
+    ext = filename.rsplit('.', 1)[-1].lower()
+    storage_path = f"depenses/{dep_id}/{filename}"
+    content_type = 'application/pdf' if ext == 'pdf' else f'image/{ext}'
+    supabase.storage.from_('factures').upload(
+        storage_path, file_bytes,
+        file_options={"content-type": content_type, "upsert": "true"}
+    )
+    supabase.table('depenses').update({'facture_path': storage_path}).eq('id', dep_id).execute()
+    return storage_path
+
+def get_facture_url(storage_path):
+    try:
+        r = supabase.storage.from_('factures').create_signed_url(storage_path, 3600)
+        return r.get('signedURL') or r.get('signedUrl', '')
+    except:
+        return ''
+
+def delete_facture(dep_id, storage_path):
+    supabase.storage.from_('factures').remove([storage_path])
+    supabase.table('depenses').update({'facture_path': None}).eq('id', dep_id).execute()
+
 def get_coproprietaires():
     try:
         return pd.DataFrame(supabase.table('coproprietaires').select('*').execute().data)
@@ -953,11 +975,15 @@ elif menu == "📝 Dépenses":
             c4.metric("Réalisé vs Budget", "N/A")
         st.divider()
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Consulter", "✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer", "🏗️ Travaux Votés"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📋 Consulter", "✏️ Modifier", "➕ Ajouter", "🗑️ Supprimer", "🏗️ Travaux Votés", "📎 Factures"])
 
         with tab1:
             disp = dep_f[['date','compte','libelle_compte','fournisseur','montant_du','classe','commentaire']].copy().sort_values('date', ascending=False)
             disp['date'] = disp['date'].dt.strftime('%d/%m/%Y')
+            # Ajouter indicateur facture
+            if 'facture_path' in dep_f.columns:
+                disp['📎'] = dep_f.sort_values('date', ascending=False)['facture_path'].apply(
+                    lambda x: '✅' if x and str(x) not in ('','None','nan') else '—')
             st.dataframe(disp, use_container_width=True, hide_index=True,
                 column_config={"montant_du": st.column_config.NumberColumn("Montant (€)", format="%,.2f")})
             st.download_button("📥 Exporter CSV", dep_f.to_csv(index=False).encode('utf-8'), f"depenses_{annee_dep}.csv", "text/csv")
@@ -1277,6 +1303,152 @@ elif menu == "📝 Dépenses":
                     else:
                         st.info("Toutes les entrées sont des transferts (à annuler via l'onglet 🔗).")
 
+        # ==================== TAB6 : FACTURES ====================
+        with tab6:
+            st.subheader("📎 Factures — vue par dépense")
+            st.caption("Cliquez sur une dépense pour afficher, uploader ou supprimer la facture associée.")
+
+            if dep_f.empty:
+                st.info("Aucune dépense pour cette période.")
+            else:
+                # Préparer la liste des dépenses avec indicateur facture
+                dep_fac = dep_f.copy()
+                dep_fac['montant_du'] = pd.to_numeric(dep_fac['montant_du'], errors='coerce').fillna(0)
+                dep_fac['date_fmt'] = dep_fac['date'].dt.strftime('%d/%m/%Y')
+                has_facture = dep_fac['facture_path'].apply(
+                    lambda x: x and str(x) not in ('','None','nan')
+                ) if 'facture_path' in dep_fac.columns else pd.Series([False]*len(dep_fac))
+
+                # Filtre par statut facture
+                col_f1, col_f2 = st.columns(2)
+                with col_f1:
+                    fac_filter = st.radio("Afficher", ["Toutes", "✅ Avec facture", "❌ Sans facture"],
+                        horizontal=True, key="fac_filter")
+                with col_f2:
+                    fac_search = st.text_input("🔍 Recherche fournisseur", key="fac_search")
+
+                dep_fac_show = dep_fac.copy()
+                if fac_filter == "✅ Avec facture":
+                    dep_fac_show = dep_fac_show[has_facture]
+                elif fac_filter == "❌ Sans facture":
+                    dep_fac_show = dep_fac_show[~has_facture]
+                if fac_search:
+                    dep_fac_show = dep_fac_show[
+                        dep_fac_show['fournisseur'].astype(str).str.contains(fac_search, case=False, na=False)
+                    ]
+
+                dep_fac_show = dep_fac_show.sort_values('date', ascending=False)
+
+                # Métriques
+                total_avec = has_facture.sum()
+                total_sans = len(dep_fac) - total_avec
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total dépenses", len(dep_fac))
+                m2.metric("✅ Avec facture", total_avec)
+                m3.metric("❌ Sans facture", total_sans)
+                st.divider()
+
+                # Affichage dépense par dépense
+                for _, row in dep_fac_show.iterrows():
+                    dep_id = int(row['id'])
+                    fp = row.get('facture_path','')
+                    a_facture = fp and str(fp) not in ('','None','nan')
+
+                    # En-tête de la ligne
+                    badge = "✅" if a_facture else "❌"
+                    with st.expander(
+                        f"{badge} {row['date_fmt']} | {row['fournisseur']} | "
+                        f"{row['montant_du']:,.2f} € | {row.get('libelle_compte','')[:40]}",
+                        expanded=False
+                    ):
+                        col_dep, col_fac = st.columns([1, 2])
+
+                        # ── Colonne gauche : infos dépense ──
+                        with col_dep:
+                            st.markdown("**📄 Dépense**")
+                            st.markdown(f"""
+| Champ | Valeur |
+|---|---|
+| **Date** | {row['date_fmt']} |
+| **Compte** | {row.get('compte','')} |
+| **Libellé** | {row.get('libelle_compte','')[:45]} |
+| **Fournisseur** | {row.get('fournisseur','')} |
+| **Montant** | **{row['montant_du']:,.2f} €** |
+| **Classe** | {row.get('classe','')} |
+| **Commentaire** | {row.get('commentaire','') or '—'} |
+""")
+                            # Upload facture
+                            st.markdown("---")
+                            uploaded = st.file_uploader(
+                                "📤 Uploader la facture",
+                                type=['pdf','png','jpg','jpeg','webp'],
+                                key=f"upload_{dep_id}",
+                                label_visibility="visible"
+                            )
+                            if uploaded:
+                                col_u1, col_u2 = st.columns(2)
+                                with col_u1:
+                                    if st.button("💾 Enregistrer la facture", key=f"save_fac_{dep_id}",
+                                                 use_container_width=True, type="primary"):
+                                        try:
+                                            upload_facture(dep_id, uploaded.getvalue(), uploaded.name)
+                                            st.success("✅ Facture enregistrée.")
+                                            st.cache_data.clear(); st.rerun()
+                                        except Exception as e:
+                                            st.error(f"❌ {e}")
+
+                            # Supprimer facture
+                            if a_facture:
+                                if st.button("🗑️ Supprimer la facture", key=f"del_fac_{dep_id}",
+                                             use_container_width=True):
+                                    try:
+                                        delete_facture(dep_id, str(fp))
+                                        st.success("✅ Facture supprimée.")
+                                        st.cache_data.clear(); st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ {e}")
+
+                        # ── Colonne droite : aperçu facture ──
+                        with col_fac:
+                            st.markdown("**🧾 Facture**")
+                            if a_facture:
+                                url = get_facture_url(str(fp))
+                                if url:
+                                    ext = str(fp).rsplit('.', 1)[-1].lower()
+                                    if ext == 'pdf':
+                                        # Lien cliquable + iframe pour PDF
+                                        st.markdown(
+                                            f"<a href='{url}' target='_blank' style='text-decoration:none;'>"
+                                            f"<button style='background:#2196F3;color:white;border:none;"
+                                            f"padding:8px 16px;border-radius:4px;cursor:pointer;'>"
+                                            f"📄 Ouvrir le PDF dans un nouvel onglet</button></a>",
+                                            unsafe_allow_html=True
+                                        )
+                                        st.markdown(
+                                            f"<iframe src='{url}' width='100%' height='500px' "
+                                            f"style='border:1px solid #444;border-radius:4px;margin-top:8px;'>"
+                                            f"</iframe>",
+                                            unsafe_allow_html=True
+                                        )
+                                    else:
+                                        st.image(url, use_column_width=True)
+                                        st.markdown(
+                                            f"<a href='{url}' target='_blank'>🔗 Ouvrir en plein écran</a>",
+                                            unsafe_allow_html=True
+                                        )
+                                else:
+                                    st.warning("⚠️ Lien expiré ou fichier inaccessible.")
+                                    st.caption(f"Chemin : `{fp}`")
+                            else:
+                                st.markdown(
+                                    "<div style='height:200px;border:2px dashed #555;border-radius:8px;"
+                                    "display:flex;align-items:center;justify-content:center;"
+                                    "color:#888;font-size:1.1em;'>"
+                                    "📂 Aucune facture — uploadez-en une à gauche"
+                                    "</div>",
+                                    unsafe_allow_html=True
+                                )
+
     else:
         st.info("💡 Aucune dépense. Utilisez l'onglet ➕ Ajouter.")
 
@@ -1319,6 +1491,122 @@ elif menu == "👥 Copropriétaires":
             disp_cols = ['lot','nom','etage','usage','tantieme_general'] + [c for c in tantieme_cols[1:] if c in copro_df.columns]
             st.dataframe(copro_df[disp_cols].sort_values('lot' if 'lot' in copro_df.columns else 'nom'),
                 use_container_width=True, hide_index=True)
+
+        with tab6:
+            st.subheader("📎 Factures associées aux dépenses")
+            st.caption("Uploadez la facture PDF ou image en regard de chaque dépense. "
+                       "Les factures sont stockées dans Supabase Storage (bucket 'factures').")
+
+            if dep_f.empty:
+                st.warning("Aucune dépense pour cette période.")
+            else:
+                dep_f_sorted = dep_f.sort_values('date', ascending=False).copy()
+
+                # Indicateur global : nb avec / sans facture
+                has_fac_col = 'facture_path' in dep_f_sorted.columns
+                if has_fac_col:
+                    nb_avec = dep_f_sorted['facture_path'].apply(
+                        lambda x: bool(x and str(x) not in ('','None','nan'))).sum()
+                    c1f, c2f, c3f = st.columns(3)
+                    c1f.metric("Total dépenses", len(dep_f_sorted))
+                    c2f.metric("✅ Avec facture", nb_avec)
+                    c3f.metric("⚠️ Sans facture", len(dep_f_sorted) - nb_avec)
+                    st.divider()
+
+                dep_labels = dep_f_sorted.apply(
+                    lambda r: (
+                        ("✅ " if has_fac_col and r.get('facture_path') and str(r.get('facture_path')) not in ('','None','nan') else "📄 ") +
+                        f"{pd.to_datetime(r['date']).strftime('%d/%m/%Y')} | {r['fournisseur']} | {float(r['montant_du']):,.2f} € | {r['libelle_compte']}"
+                    ), axis=1
+                ).tolist()
+
+                sel_label = st.selectbox("Sélectionner une dépense", dep_labels, key="fac_dep_sel")
+                sel_row   = dep_f_sorted.iloc[dep_labels.index(sel_label)]
+                sel_id    = int(sel_row['id'])
+                fac_path  = sel_row.get('facture_path', None) if has_fac_col else None
+                has_fac   = bool(fac_path and str(fac_path) not in ('', 'None', 'nan'))
+
+                st.divider()
+                col_left, col_right = st.columns(2)
+
+                # ── Gauche : infos + upload ──────────────────────────
+                with col_left:
+                    st.markdown("#### 🧾 Dépense")
+                    st.markdown(f"""
+| | |
+|---|---|
+| **Date** | {pd.to_datetime(sel_row['date']).strftime('%d/%m/%Y')} |
+| **Compte** | {sel_row['compte']} — {sel_row['libelle_compte']} |
+| **Fournisseur** | {sel_row['fournisseur']} |
+| **Montant** | **{float(sel_row['montant_du']):,.2f} €** |
+| **Classe** | {sel_row['classe']} |
+| **Commentaire** | {sel_row.get('commentaire','') or '—'} |
+""")
+                    st.divider()
+                    st.markdown("#### 📤 Joindre une facture")
+                    uploaded = st.file_uploader(
+                        "PDF ou image (JPG, PNG)",
+                        type=["pdf","jpg","jpeg","png"],
+                        key=f"fac_up_{sel_id}"
+                    )
+                    if uploaded:
+                        col_u1, col_u2 = st.columns(2)
+                        with col_u1:
+                            if st.button("📤 Envoyer", key=f"btn_up_{sel_id}",
+                                         use_container_width=True, type="primary"):
+                                try:
+                                    path = upload_facture(sel_id, uploaded.read(), uploaded.name)
+                                    st.success(f"✅ Facture **{uploaded.name}** uploadée.")
+                                    st.cache_data.clear(); st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ {e}")
+                        with col_u2:
+                            st.caption(f"{uploaded.name} — {uploaded.size/1024:.0f} Ko")
+
+                    if has_fac:
+                        st.divider()
+                        if st.button("🗑️ Supprimer la facture", key=f"del_fac_{sel_id}",
+                                     use_container_width=True):
+                            try:
+                                delete_facture(sel_id, str(fac_path))
+                                st.success("✅ Facture supprimée.")
+                                st.cache_data.clear(); st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+
+                # ── Droite : visualisation ───────────────────────────
+                with col_right:
+                    st.markdown("#### 📄 Facture")
+                    if has_fac:
+                        try:
+                            fac_url = get_facture_url(str(fac_path))
+                            ext = str(fac_path).rsplit('.', 1)[-1].lower()
+                            if fac_url:
+                                if ext == 'pdf':
+                                    st.markdown(
+                                        f"<iframe src='{fac_url}' width='100%' height='620px' "
+                                        f"style='border:1px solid #444;border-radius:6px;'></iframe>",
+                                        unsafe_allow_html=True)
+                                else:
+                                    st.image(fac_url, use_container_width=True)
+                                st.download_button(
+                                    "⬇️ Télécharger",
+                                    data=fac_url,
+                                    file_name=str(fac_path).split('/')[-1],
+                                    key=f"dl_fac_{sel_id}")
+                            else:
+                                st.warning("⚠️ URL non disponible — vérifiez le bucket Supabase.")
+                        except Exception as e:
+                            st.error(f"❌ Impossible de charger : {e}")
+                    else:
+                        st.markdown(
+                            "<div style='border:2px dashed #444;border-radius:8px;"
+                            "height:420px;display:flex;align-items:center;"
+                            "justify-content:center;flex-direction:column;gap:12px;'>"
+                            "<span style='font-size:3em;'>📄</span>"
+                            "<span style='color:#666;'>Aucune facture jointe</span>"
+                            "</div>",
+                            unsafe_allow_html=True)
 
 # ==================== RÉPARTITION ====================
 elif menu == "🔄 Répartition":
