@@ -1627,36 +1627,148 @@ elif menu == "👥 Copropriétaires":
         copro_df = prepare_copro(copro_df)
         tantieme_cols = ['tantieme_general','tantieme_ascenseurs','tantieme_rdc_ssols','tantieme_garages','tantieme_ssols','tantieme_monte_voitures']
 
-        c1, c2, c3 = st.columns(3)
+        # S'assurer que les colonnes contact existent
+        for col_c in ['email','telephone','whatsapp']:
+            if col_c not in copro_df.columns:
+                copro_df[col_c] = None if col_c != 'whatsapp' else False
+
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Copropriétaires", len(copro_df))
         c2.metric("Total tantièmes généraux", int(copro_df['tantieme_general'].sum()))
         c3.metric("Lots parkings", len(copro_df[copro_df['usage']=='parking']) if 'usage' in copro_df.columns else "—")
+        nb_wa = int(copro_df['whatsapp'].fillna(False).astype(bool).sum())
+        c4.metric("💬 WhatsApp", nb_wa)
 
-        st.divider()
-        # Vérifier si les tantièmes spécifiques sont remplis
-        remplis = {col: int(copro_df[col].sum()) for col in tantieme_cols if col in copro_df.columns}
-        st.subheader("🔑 État des clés de répartition")
-        cols = st.columns(len(remplis))
-        for i, (col, total) in enumerate(remplis.items()):
-            label = col.replace('tantieme_','').replace('_',' ').title()
-            status = "✅" if total > 0 else "⚠️ À remplir"
-            cols[i].metric(f"{status} {label}", f"{total:,}")
+        copro_tab1, copro_tab2, copro_tab3 = st.tabs(["📋 Liste", "📞 Contacts", "🔑 Tantièmes"])
 
-        if any(v == 0 for v in remplis.values()):
-            st.warning("⚠️ Certains tantièmes sont à 0. Exécutez **UPDATE_TANTIEMES.sql** dans Supabase pour les remplir.")
-
-        st.divider()
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            st.subheader("Répartition des tantièmes généraux")
-            fig = px.pie(copro_df, values='tantieme_general', names='nom')
-            fig.update_traces(textposition='inside', textinfo='percent')
-            st.plotly_chart(fig, use_container_width=True)
-        with col2:
+        # ── TAB 1 : Liste complète ──────────────────────────────────
+        with copro_tab1:
             st.subheader("Liste des copropriétaires")
-            disp_cols = ['lot','nom','etage','usage','tantieme_general'] + [c for c in tantieme_cols[1:] if c in copro_df.columns]
-            st.dataframe(copro_df[disp_cols].sort_values('lot' if 'lot' in copro_df.columns else 'nom'),
-                use_container_width=True, hide_index=True)
+            disp_cols_base = ['lot','nom','etage','usage','tantieme_general']
+            contact_disp = [c for c in ['email','telephone','whatsapp'] if c in copro_df.columns]
+            disp_cols = disp_cols_base + contact_disp
+            df_disp = copro_df[disp_cols].sort_values('lot' if 'lot' in copro_df.columns else 'nom').copy()
+            if 'whatsapp' in df_disp.columns:
+                df_disp['whatsapp'] = df_disp['whatsapp'].fillna(False).astype(bool)
+
+            st.dataframe(
+                df_disp,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'lot':              st.column_config.NumberColumn("Lot", format="%d"),
+                    'nom':              st.column_config.TextColumn("Nom"),
+                    'etage':            st.column_config.TextColumn("Étage"),
+                    'usage':            st.column_config.TextColumn("Usage"),
+                    'tantieme_general': st.column_config.NumberColumn("Tantièmes généraux", format="%d"),
+                    'email':            st.column_config.TextColumn("📧 Email"),
+                    'telephone':        st.column_config.TextColumn("📱 Téléphone"),
+                    'whatsapp':         st.column_config.CheckboxColumn("💬 WhatsApp"),
+                }
+            )
+
+            # Export CSV
+            csv_copro = df_disp.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+            st.download_button("📥 Exporter CSV", data=csv_copro,
+                               file_name="coproprietaires.csv", mime="text/csv", key="dl_copro")
+
+        # ── TAB 2 : Contacts (édition mail/tel/whatsapp) ───────────
+        with copro_tab2:
+            st.subheader("📞 Coordonnées & WhatsApp")
+            st.caption("Cliquez sur une cellule pour modifier directement. Enregistrez ligne par ligne.")
+
+            # Sélecteur copropriétaire
+            noms_sorted = sorted(copro_df['nom'].tolist())
+            sel_nom = st.selectbox("Sélectionner un copropriétaire", noms_sorted, key="sel_contact")
+            row_sel = copro_df[copro_df['nom'] == sel_nom].iloc[0]
+            cop_id  = int(row_sel['id'])
+
+            st.divider()
+            col_c1, col_c2, col_c3 = st.columns([3,3,1])
+            with col_c1:
+                new_email = st.text_input("📧 Email", value=str(row_sel.get('email','') or ''),
+                                          key=f"email_{cop_id}", placeholder="prenom.nom@email.com")
+            with col_c2:
+                new_tel = st.text_input("📱 Téléphone", value=str(row_sel.get('telephone','') or ''),
+                                        key=f"tel_{cop_id}", placeholder="+33 6 00 00 00 00")
+            with col_c3:
+                st.markdown("<br>", unsafe_allow_html=True)
+                new_wa = st.checkbox("💬 WhatsApp", value=bool(row_sel.get('whatsapp', False)),
+                                     key=f"wa_{cop_id}")
+
+            if st.button("💾 Enregistrer les coordonnées", key=f"save_contact_{cop_id}",
+                         type="primary", use_container_width=True):
+                try:
+                    updates = {
+                        'email':     new_email.strip() or None,
+                        'telephone': new_tel.strip() or None,
+                        'whatsapp':  new_wa,
+                    }
+                    supabase.table('coproprietaires').update(updates).eq('id', cop_id).execute()
+                    st.success(f"✅ Coordonnées de **{sel_nom}** enregistrées.")
+                    st.cache_data.clear(); st.rerun()
+                except Exception as e:
+                    st.error(f"❌ {e}")
+
+            st.divider()
+            st.subheader("📋 Annuaire complet")
+            # Tableau annuaire complet lecture seule
+            annuaire = copro_df[['lot','nom','email','telephone','whatsapp']].copy()
+            annuaire = annuaire.sort_values('lot')
+            annuaire['whatsapp'] = annuaire['whatsapp'].fillna(False).astype(bool)
+            # Indicateurs
+            nb_email = annuaire['email'].apply(lambda x: bool(x) and str(x) not in ('','None','nan')).sum()
+            nb_tel   = annuaire['telephone'].apply(lambda x: bool(x) and str(x) not in ('','None','nan')).sum()
+            ann1, ann2, ann3 = st.columns(3)
+            ann1.metric("📧 Avec email",     f"{nb_email}/{len(annuaire)}")
+            ann2.metric("📱 Avec téléphone", f"{nb_tel}/{len(annuaire)}")
+            ann3.metric("💬 WhatsApp",       f"{nb_wa}/{len(annuaire)}")
+
+            st.dataframe(
+                annuaire,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'lot':       st.column_config.NumberColumn("Lot", format="%d"),
+                    'nom':       st.column_config.TextColumn("Nom"),
+                    'email':     st.column_config.TextColumn("📧 Email"),
+                    'telephone': st.column_config.TextColumn("📱 Téléphone"),
+                    'whatsapp':  st.column_config.CheckboxColumn("💬 WhatsApp"),
+                }
+            )
+
+            # Export annuaire CSV
+            csv_ann = annuaire.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+            st.download_button("📥 Exporter l'annuaire CSV", data=csv_ann,
+                               file_name="annuaire_copro.csv", mime="text/csv", key="dl_ann")
+
+        # ── TAB 3 : Tantièmes ───────────────────────────────────────
+        with copro_tab3:
+            st.divider()
+            # Vérifier si les tantièmes spécifiques sont remplis
+            remplis = {col: int(copro_df[col].sum()) for col in tantieme_cols if col in copro_df.columns}
+            st.subheader("🔑 État des clés de répartition")
+            cols = st.columns(len(remplis))
+            for i, (col, total) in enumerate(remplis.items()):
+                label = col.replace('tantieme_','').replace('_',' ').title()
+                status = "✅" if total > 0 else "⚠️ À remplir"
+                cols[i].metric(f"{status} {label}", f"{total:,}")
+
+            if any(v == 0 for v in remplis.values()):
+                st.warning("⚠️ Certains tantièmes sont à 0. Exécutez **UPDATE_TANTIEMES.sql** dans Supabase pour les remplir.")
+
+            st.divider()
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                st.subheader("Répartition des tantièmes généraux")
+                fig = px.pie(copro_df, values='tantieme_general', names='nom')
+                fig.update_traces(textposition='inside', textinfo='percent')
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                st.subheader("Tantièmes par copropriétaire")
+                tant_cols_disp = ['lot','nom'] + [c for c in tantieme_cols if c in copro_df.columns]
+                st.dataframe(copro_df[tant_cols_disp].sort_values('lot' if 'lot' in copro_df.columns else 'nom'),
+                    use_container_width=True, hide_index=True)
 
 # ==================== RÉPARTITION ====================
 elif menu == "🔄 Répartition":
