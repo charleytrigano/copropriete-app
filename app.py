@@ -4368,6 +4368,15 @@ elif menu == "📬 Communications":
                             with urllib.request.urlopen(req) as resp:
                                 resp.read()
                             ok_list.append(f"✅ {cop['nom']} ({dest_email})")
+                        except urllib.error.HTTPError as e:
+                            detail = e.read().decode('utf-8', errors='ignore')
+                            try:
+                                import json as _j2
+                                d = _j2.loads(detail)
+                                msg_err = d.get('message', detail)
+                            except:
+                                msg_err = detail
+                            err_list.append(f"❌ {cop['nom']} — HTTP {e.code}: {msg_err}")
                         except Exception as e:
                             err_list.append(f"❌ {cop['nom']} — {e}")
                         progress.progress((i+1)/nb_dest,
