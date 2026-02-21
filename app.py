@@ -656,7 +656,7 @@ st.sidebar.title("Navigation")
 menu = st.sidebar.radio("Choisir une section", [
     "📊 Tableau de Bord", "💰 Budget", "📝 Dépenses",
     "👥 Copropriétaires", "🔄 Répartition", "🏛️ Loi Alur", "📈 Analyses", "📋 Plan Comptable",
-    "🏛 AG — Assemblée Générale", "📒 Grand Livre"
+    "🏛 AG — Assemblée Générale", "📒 Grand Livre", "📑 Contrats Fournisseurs"
 ])
 
 # ==================== TABLEAU DE BORD ====================
@@ -3782,6 +3782,343 @@ elif menu == "📒 Grand Livre":
                         'Reste (€)':  st.column_config.NumberColumn("Reste (€)",  format="%.2f"),
                     }
                 )
+
+
+# ==================== CONTRATS FOURNISSEURS ====================
+elif menu == "📑 Contrats Fournisseurs":
+    st.markdown("<h1 class='main-header'>📑 Contrats Fournisseurs</h1>", unsafe_allow_html=True)
+    st.caption("Gérez les contrats liant la copropriété à ses prestataires")
+
+    @st.cache_data(ttl=60)
+    def get_contrats():
+        try:
+            r = supabase.table('contrats').select('*').order('date_debut', desc=True).execute()
+            return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+        except Exception as e:
+            st.error(f"❌ {e}"); return pd.DataFrame()
+
+    def upload_contrat_doc(contrat_id, file_bytes, filename):
+        ext = filename.rsplit('.', 1)[-1].lower()
+        path = f"contrats/{contrat_id}/{filename}"
+        content_type = 'application/pdf' if ext == 'pdf' else f'image/{ext}'
+        try:
+            supabase.storage.from_('factures').remove([path])
+        except:
+            pass
+        supabase.storage.from_('factures').upload(path, file_bytes,
+            file_options={"content-type": content_type, "upsert": "true"})
+        supabase.table('contrats').update({'document_path': path}).eq('id', contrat_id).execute()
+        return path
+
+    TYPES_CONTRAT = [
+        "Entretien ascenseur", "Nettoyage parties communes", "Gardiennage / Conciergerie",
+        "Assurance immeuble", "Maintenance chauffage", "Espaces verts",
+        "Électricité parties communes", "Eau", "Gaz", "Désinfection / Nuisibles",
+        "Syndic", "Autre"
+    ]
+    STATUTS = ["En cours", "À renouveler", "Résilié", "En négociation"]
+
+    ct1, ct2, ct3, ct4 = st.tabs(["📋 Tous les contrats", "➕ Nouveau contrat", "✏️ Modifier", "🗑️ Supprimer"])
+
+    # ── TAB 1 : Liste ──────────────────────────────────────────────
+    with ct1:
+        df_ct = get_contrats()
+
+        if df_ct.empty:
+            st.info("Aucun contrat enregistré. Ajoutez-en un dans l'onglet ➕ Nouveau contrat.")
+        else:
+            # Normalisation
+            for col_d in ['date_debut','date_fin','date_echeance']:
+                if col_d in df_ct.columns:
+                    df_ct[col_d] = pd.to_datetime(df_ct[col_d], errors='coerce')
+            if 'montant_annuel' in df_ct.columns:
+                df_ct['montant_annuel'] = pd.to_numeric(df_ct['montant_annuel'], errors='coerce').fillna(0)
+
+            # Métriques
+            nb_total   = len(df_ct)
+            nb_cours   = len(df_ct[df_ct.get('statut','') == 'En cours']) if 'statut' in df_ct.columns else 0
+            nb_renouv  = len(df_ct[df_ct.get('statut','') == 'À renouveler']) if 'statut' in df_ct.columns else 0
+            total_an   = float(df_ct['montant_annuel'].sum()) if 'montant_annuel' in df_ct.columns else 0
+
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("📑 Contrats total", nb_total)
+            mc2.metric("✅ En cours", nb_cours)
+            mc3.metric("⚠️ À renouveler", nb_renouv)
+            mc4.metric("💰 Coût annuel total", f"{total_an:,.0f} €")
+
+            # Alertes échéance dans 60 jours
+            today = pd.Timestamp.today().normalize()
+            if 'date_echeance' in df_ct.columns:
+                proches = df_ct[
+                    df_ct['date_echeance'].notna() &
+                    (df_ct['date_echeance'] >= today) &
+                    (df_ct['date_echeance'] <= today + pd.Timedelta(days=60))
+                ]
+                for _, r in proches.iterrows():
+                    jours = (r['date_echeance'] - today).days
+                    st.warning(f"⏰ **{r.get('fournisseur','')}** — {r.get('type_contrat','')} : "
+                               f"échéance dans **{jours} jour(s)** ({r['date_echeance'].strftime('%d/%m/%Y')})")
+
+            st.divider()
+
+            # Filtres
+            fcol1, fcol2, fcol3 = st.columns(3)
+            with fcol1:
+                types_dispo = ["Tous"] + sorted(df_ct['type_contrat'].dropna().unique().tolist()) if 'type_contrat' in df_ct.columns else ["Tous"]
+                filt_type = st.selectbox("📂 Type", types_dispo, key="ct_filt_type")
+            with fcol2:
+                statuts_dispo = ["Tous"] + STATUTS
+                filt_statut = st.selectbox("🔵 Statut", statuts_dispo, key="ct_filt_statut")
+            with fcol3:
+                filt_search = st.text_input("🔍 Rechercher fournisseur", key="ct_search")
+
+            df_show = df_ct.copy()
+            if filt_type   != "Tous" and 'type_contrat' in df_show.columns:
+                df_show = df_show[df_show['type_contrat'] == filt_type]
+            if filt_statut != "Tous" and 'statut' in df_show.columns:
+                df_show = df_show[df_show['statut'] == filt_statut]
+            if filt_search and 'fournisseur' in df_show.columns:
+                df_show = df_show[df_show['fournisseur'].str.contains(filt_search, case=False, na=False)]
+
+            # Tableau principal
+            cols_tab = ['fournisseur','type_contrat','statut','montant_annuel',
+                        'date_debut','date_fin','date_echeance','tacite_reconduction']
+            cols_tab = [c for c in cols_tab if c in df_show.columns]
+            df_tab   = df_show[cols_tab].copy()
+            for col_d in ['date_debut','date_fin','date_echeance']:
+                if col_d in df_tab.columns:
+                    df_tab[col_d] = df_tab[col_d].apply(
+                        lambda x: x.strftime('%d/%m/%Y') if pd.notna(x) else '—')
+
+            st.dataframe(
+                df_tab,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'fournisseur':        st.column_config.TextColumn("Fournisseur"),
+                    'type_contrat':       st.column_config.TextColumn("Type"),
+                    'statut':             st.column_config.TextColumn("Statut"),
+                    'montant_annuel':     st.column_config.NumberColumn("Montant annuel (€)", format="%.2f"),
+                    'date_debut':         st.column_config.TextColumn("Début"),
+                    'date_fin':           st.column_config.TextColumn("Fin"),
+                    'date_echeance':      st.column_config.TextColumn("Échéance préavis"),
+                    'tacite_reconduction':st.column_config.CheckboxColumn("Tacite recon."),
+                }
+            )
+
+            # Détail + document d'un contrat sélectionné
+            st.divider()
+            st.subheader("📄 Détail & Document")
+            labels_ct = df_show.apply(
+                lambda r: f"{r.get('fournisseur','')} — {r.get('type_contrat','')} "
+                          f"({'✅' if r.get('document_path') else '📄'})", axis=1).tolist()
+            if labels_ct:
+                sel_ct_label = st.selectbox("Sélectionner un contrat", labels_ct, key="ct_sel_detail")
+                sel_ct_row   = df_show.iloc[labels_ct.index(sel_ct_label)]
+                sel_ct_id    = int(sel_ct_row['id'])
+                doc_path     = sel_ct_row.get('document_path', None)
+                has_doc      = bool(doc_path and str(doc_path) not in ('','None','nan'))
+
+                col_info, col_doc = st.columns(2)
+                with col_info:
+                    st.markdown("**Informations contrat**")
+                    infos = {
+                        "Fournisseur":    sel_ct_row.get('fournisseur',''),
+                        "Type":           sel_ct_row.get('type_contrat',''),
+                        "Statut":         sel_ct_row.get('statut',''),
+                        "Montant annuel": f"{float(sel_ct_row.get('montant_annuel',0) or 0):,.2f} €",
+                        "Début":          pd.to_datetime(sel_ct_row.get('date_debut')).strftime('%d/%m/%Y') if pd.notna(sel_ct_row.get('date_debut')) else '—',
+                        "Fin":            pd.to_datetime(sel_ct_row.get('date_fin')).strftime('%d/%m/%Y') if pd.notna(sel_ct_row.get('date_fin')) else '—',
+                        "Échéance":       pd.to_datetime(sel_ct_row.get('date_echeance')).strftime('%d/%m/%Y') if pd.notna(sel_ct_row.get('date_echeance')) else '—',
+                        "Tacite recon.":  "Oui" if sel_ct_row.get('tacite_reconduction') else "Non",
+                        "Préavis":        f"{sel_ct_row.get('preavis_mois', '—')} mois",
+                        "Notes":          sel_ct_row.get('notes','') or '—',
+                    }
+                    for k, v in infos.items():
+                        st.markdown(f"**{k}** : {v}")
+
+                    st.divider()
+                    st.markdown("**📎 Joindre le contrat (PDF)**")
+                    up_doc = st.file_uploader("PDF ou image", type=["pdf","jpg","jpeg","png"],
+                                              key=f"up_ct_{sel_ct_id}")
+                    if up_doc:
+                        if st.button("📤 Envoyer le document", key=f"btn_up_ct_{sel_ct_id}",
+                                     type="primary", use_container_width=True):
+                            try:
+                                upload_contrat_doc(sel_ct_id, up_doc.read(), up_doc.name)
+                                st.success("✅ Document uploadé.")
+                                st.cache_data.clear(); st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+                    if has_doc:
+                        if st.button("🗑️ Supprimer le document", key=f"del_doc_ct_{sel_ct_id}",
+                                     use_container_width=True):
+                            try:
+                                supabase.storage.from_('factures').remove([str(doc_path)])
+                                supabase.table('contrats').update({'document_path': None}).eq('id', sel_ct_id).execute()
+                                st.success("✅ Document supprimé.")
+                                st.cache_data.clear(); st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+
+                with col_doc:
+                    if has_doc:
+                        st.markdown("**📄 Document**")
+                        try:
+                            afficher_facture(str(doc_path), height=600)
+                        except Exception as e:
+                            st.error(f"❌ {e}")
+                    else:
+                        st.markdown(
+                            "<div style='border:2px dashed #444;border-radius:8px;height:420px;"
+                            "display:flex;align-items:center;justify-content:center;"
+                            "flex-direction:column;gap:12px;'>"
+                            "<span style='font-size:3em;'>📑</span>"
+                            "<span style='color:#666;'>Aucun document joint</span></div>",
+                            unsafe_allow_html=True)
+
+            # Export CSV
+            csv_ct = df_tab.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+            st.download_button("📥 Exporter CSV", data=csv_ct,
+                               file_name="contrats_fournisseurs.csv", mime="text/csv", key="dl_ct")
+
+    # ── TAB 2 : Nouveau contrat ────────────────────────────────────
+    with ct2:
+        st.subheader("➕ Ajouter un contrat")
+        with st.form("form_new_contrat", clear_on_submit=True):
+            nf1, nf2 = st.columns(2)
+            with nf1:
+                nf_fourn   = st.text_input("Fournisseur *", placeholder="Ex: OTIS, Ménagère du 8ème…")
+                nf_type    = st.selectbox("Type de contrat *", TYPES_CONTRAT)
+                nf_statut  = st.selectbox("Statut", STATUTS)
+                nf_montant = st.number_input("Montant annuel HT (€)", min_value=0.0, step=10.0)
+            with nf2:
+                nf_debut   = st.date_input("Date de début", key="nf_debut")
+                nf_fin     = st.date_input("Date de fin (si définie)", value=None, key="nf_fin")
+                nf_echeance= st.date_input("Date d'échéance préavis", value=None, key="nf_ech")
+                nf_preavis = st.number_input("Préavis (mois)", min_value=0, max_value=24, value=3, step=1)
+            nf_tacite  = st.checkbox("Tacite reconduction")
+            nf_notes   = st.text_area("Notes / Observations", height=80)
+            submitted  = st.form_submit_button("💾 Créer le contrat", type="primary",
+                                               use_container_width=True)
+
+        if submitted:
+            if not nf_fourn.strip():
+                st.error("❌ Le nom du fournisseur est obligatoire.")
+            else:
+                try:
+                    payload = {
+                        'fournisseur':         nf_fourn.strip(),
+                        'type_contrat':        nf_type,
+                        'statut':              nf_statut,
+                        'montant_annuel':      float(nf_montant),
+                        'date_debut':          nf_debut.strftime('%Y-%m-%d'),
+                        'date_fin':            nf_fin.strftime('%Y-%m-%d') if nf_fin else None,
+                        'date_echeance':       nf_echeance.strftime('%Y-%m-%d') if nf_echeance else None,
+                        'preavis_mois':        int(nf_preavis),
+                        'tacite_reconduction': nf_tacite,
+                        'notes':               nf_notes.strip() or None,
+                    }
+                    supabase.table('contrats').insert(payload).execute()
+                    st.success(f"✅ Contrat **{nf_fourn}** créé.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"❌ {e}")
+
+    # ── TAB 3 : Modifier ──────────────────────────────────────────
+    with ct3:
+        st.subheader("✏️ Modifier un contrat")
+        df_mod = get_contrats()
+        if df_mod.empty:
+            st.info("Aucun contrat.")
+        else:
+            labels_mod = df_mod.apply(
+                lambda r: f"{r.get('fournisseur','')} — {r.get('type_contrat','')}", axis=1).tolist()
+            sel_mod = st.selectbox("Sélectionner", labels_mod, key="ct_mod_sel")
+            row_mod = df_mod.iloc[labels_mod.index(sel_mod)]
+            mod_id  = int(row_mod['id'])
+
+            with st.form(f"form_mod_{mod_id}"):
+                mf1, mf2 = st.columns(2)
+                with mf1:
+                    m_fourn  = st.text_input("Fournisseur", value=str(row_mod.get('fournisseur','') or ''))
+                    m_type   = st.selectbox("Type", TYPES_CONTRAT,
+                                            index=TYPES_CONTRAT.index(row_mod['type_contrat'])
+                                            if row_mod.get('type_contrat') in TYPES_CONTRAT else 0)
+                    m_statut = st.selectbox("Statut", STATUTS,
+                                            index=STATUTS.index(row_mod['statut'])
+                                            if row_mod.get('statut') in STATUTS else 0)
+                    m_montant= st.number_input("Montant annuel HT (€)",
+                                               value=float(row_mod.get('montant_annuel',0) or 0),
+                                               min_value=0.0, step=10.0)
+                with mf2:
+                    m_debut  = st.date_input("Date début",
+                                             value=pd.to_datetime(row_mod['date_debut']).date()
+                                             if pd.notna(row_mod.get('date_debut')) else None,
+                                             key="m_debut")
+                    m_fin    = st.date_input("Date fin",
+                                             value=pd.to_datetime(row_mod['date_fin']).date()
+                                             if pd.notna(row_mod.get('date_fin')) else None,
+                                             key="m_fin")
+                    m_ech    = st.date_input("Échéance préavis",
+                                             value=pd.to_datetime(row_mod['date_echeance']).date()
+                                             if pd.notna(row_mod.get('date_echeance')) else None,
+                                             key="m_ech")
+                    m_preavis= st.number_input("Préavis (mois)",
+                                               value=int(row_mod.get('preavis_mois',3) or 3),
+                                               min_value=0, max_value=24, step=1)
+                m_tacite = st.checkbox("Tacite reconduction", value=bool(row_mod.get('tacite_reconduction', False)))
+                m_notes  = st.text_area("Notes", value=str(row_mod.get('notes','') or ''), height=80)
+                save_mod = st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True)
+
+            if save_mod:
+                try:
+                    supabase.table('contrats').update({
+                        'fournisseur':         m_fourn.strip(),
+                        'type_contrat':        m_type,
+                        'statut':              m_statut,
+                        'montant_annuel':      float(m_montant),
+                        'date_debut':          m_debut.strftime('%Y-%m-%d') if m_debut else None,
+                        'date_fin':            m_fin.strftime('%Y-%m-%d') if m_fin else None,
+                        'date_echeance':       m_ech.strftime('%Y-%m-%d') if m_ech else None,
+                        'preavis_mois':        int(m_preavis),
+                        'tacite_reconduction': m_tacite,
+                        'notes':               m_notes.strip() or None,
+                    }).eq('id', mod_id).execute()
+                    st.success("✅ Contrat mis à jour.")
+                    st.cache_data.clear(); st.rerun()
+                except Exception as e:
+                    st.error(f"❌ {e}")
+
+    # ── TAB 4 : Supprimer ─────────────────────────────────────────
+    with ct4:
+        st.subheader("🗑️ Supprimer un contrat")
+        df_del = get_contrats()
+        if df_del.empty:
+            st.info("Aucun contrat.")
+        else:
+            labels_del = df_del.apply(
+                lambda r: f"{r.get('fournisseur','')} — {r.get('type_contrat','')}", axis=1).tolist()
+            sel_del  = st.selectbox("Sélectionner", labels_del, key="ct_del_sel")
+            row_del  = df_del.iloc[labels_del.index(sel_del)]
+            del_id   = int(row_del['id'])
+            doc_del  = row_del.get('document_path', None)
+
+            st.warning(f"⚠️ Supprimer le contrat **{row_del.get('fournisseur','')}** "
+                       f"— {row_del.get('type_contrat','')} ? Cette action est irréversible.")
+            if doc_del and str(doc_del) not in ('','None','nan'):
+                st.info(f"📎 Le document associé ({doc_del}) sera également supprimé du stockage.")
+            confirm_del = st.checkbox("Je confirme la suppression", key="ct_del_confirm")
+            if st.button("🗑️ Supprimer", disabled=not confirm_del, key="ct_del_btn",
+                         use_container_width=True):
+                try:
+                    if doc_del and str(doc_del) not in ('','None','nan'):
+                        supabase.storage.from_('factures').remove([str(doc_del)])
+                    supabase.table('contrats').delete().eq('id', del_id).execute()
+                    st.success("✅ Contrat supprimé.")
+                    st.cache_data.clear(); st.rerun()
+                except Exception as e:
+                    st.error(f"❌ {e}")
 
 
 st.divider()
