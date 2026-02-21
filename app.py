@@ -656,7 +656,7 @@ st.sidebar.title("Navigation")
 menu = st.sidebar.radio("Choisir une section", [
     "📊 Tableau de Bord", "💰 Budget", "📝 Dépenses",
     "👥 Copropriétaires", "🔄 Répartition", "🏛️ Loi Alur", "📈 Analyses", "📋 Plan Comptable",
-    "🏛 AG — Assemblée Générale"
+    "🏛 AG — Assemblée Générale", "📒 Grand Livre"
 ])
 
 # ==================== TABLEAU DE BORD ====================
@@ -3495,6 +3495,279 @@ elif menu == "🏛 AG — Assemblée Générale":
                         st.cache_data.clear(); st.rerun()
                     except Exception as e:
                         st.error(f"❌ {e}")
+
+
+# ==================== GRAND LIVRE GÉNÉRAL ====================
+elif menu == "📒 Grand Livre":
+    st.markdown("<h1 class='main-header'>📒 Grand Livre Général</h1>", unsafe_allow_html=True)
+    st.caption("Toutes les écritures comptables regroupées par compte")
+
+    dep_gl   = get_depenses()
+    bud_gl   = get_budget()
+    plan_gl  = get_plan_comptable()
+
+    if dep_gl.empty:
+        st.info("Aucune dépense enregistrée.")
+    else:
+        # ---- Normalisation des colonnes ----
+        dep_gl['date']        = pd.to_datetime(dep_gl['date'], errors='coerce')
+        dep_gl['compte']      = dep_gl['compte'].astype(str).str.strip()
+        dep_gl['montant_du']  = pd.to_numeric(dep_gl['montant_du'],  errors='coerce').fillna(0)
+        dep_gl['montant_paye']= pd.to_numeric(dep_gl.get('montant_paye', 0), errors='coerce').fillna(0)
+
+        # ---- Jointure plan comptable pour libellé ----
+        if not plan_gl.empty:
+            plan_gl['compte'] = plan_gl['compte'].astype(str).str.strip()
+            libelle_map = plan_gl.set_index('compte')['libelle_compte'].to_dict()
+            classe_map  = plan_gl.set_index('compte')['classe'].to_dict()
+            famille_map = plan_gl.set_index('compte')['famille'].to_dict()
+        else:
+            libelle_map = {}; classe_map = {}; famille_map = {}
+
+        # ---- Jointure budget ----
+        if not bud_gl.empty:
+            bud_gl['compte'] = bud_gl['compte'].astype(str).str.strip()
+            bud_map = bud_gl.set_index('compte')['montant_budget'].to_dict()
+        else:
+            bud_map = {}
+
+        dep_gl['libelle_compte'] = dep_gl['compte'].map(libelle_map).fillna('')
+        dep_gl['classe']         = dep_gl['compte'].map(classe_map).fillna('')
+        dep_gl['famille']        = dep_gl['compte'].map(famille_map).fillna('')
+
+        # ---- Filtres ----
+        col_f1, col_f2, col_f3, col_f4 = st.columns([2,2,2,2])
+        with col_f1:
+            annees_gl = sorted(dep_gl['date'].dt.year.dropna().astype(int).unique(), reverse=True)
+            annee_gl  = st.selectbox("📅 Année", ["Toutes"] + annees_gl, key="gl_annee")
+        with col_f2:
+            classes_gl = sorted(dep_gl['classe'].dropna().unique())
+            classe_gl  = st.selectbox("📂 Classe", ["Toutes"] + classes_gl, key="gl_classe")
+        with col_f3:
+            comptes_gl = sorted(dep_gl['compte'].unique())
+            compte_gl  = st.selectbox("🔢 Compte", ["Tous"] + comptes_gl, key="gl_compte")
+        with col_f4:
+            affichage_gl = st.radio("📋 Affichage", ["Par compte", "Liste complète"], key="gl_aff",
+                                    horizontal=True)
+
+        # Application filtres
+        df_gl = dep_gl.copy()
+        if annee_gl != "Toutes":
+            df_gl = df_gl[df_gl['date'].dt.year == int(annee_gl)]
+        if classe_gl != "Toutes":
+            df_gl = df_gl[df_gl['classe'] == classe_gl]
+        if compte_gl != "Tous":
+            df_gl = df_gl[df_gl['compte'] == compte_gl]
+
+        # ---- Métriques globales ----
+        total_debit  = df_gl['montant_du'].sum()
+        total_paye   = df_gl['montant_paye'].sum()
+        total_reste  = total_debit - total_paye
+        nb_ecritures = len(df_gl)
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("📝 Écritures",       f"{nb_ecritures}")
+        mc2.metric("💸 Total Débit",     f"{total_debit:,.2f} €")
+        mc3.metric("✅ Total Réglé",     f"{total_paye:,.2f} €")
+        mc4.metric("⏳ Reste à Régler",  f"{total_reste:,.2f} €",
+                   delta=f"{-total_reste:,.2f} €" if total_reste > 0 else None,
+                   delta_color="inverse")
+        st.divider()
+
+        # ---- Export global CSV ----
+        export_cols = ['date','compte','libelle_compte','classe','famille',
+                       'fournisseur','libelle','montant_du','montant_paye']
+        export_cols = [c for c in export_cols if c in df_gl.columns]
+        df_export = df_gl[export_cols].copy()
+        df_export['date'] = df_export['date'].dt.strftime('%d/%m/%Y')
+        df_export.columns = [c.replace('_',' ').title() for c in df_export.columns]
+        csv_gl = df_export.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+        st.download_button("📥 Exporter tout le Grand Livre (CSV)", data=csv_gl,
+                           file_name=f"grand_livre_{annee_gl}.csv", mime="text/csv",
+                           key="dl_gl_global")
+
+        # ==================== AFFICHAGE PAR COMPTE ====================
+        if affichage_gl == "Par compte":
+            comptes_actifs = sorted(df_gl['compte'].unique())
+            if not comptes_actifs:
+                st.info("Aucune écriture pour ces filtres.")
+            else:
+                for cpt in comptes_actifs:
+                    df_cpt = df_gl[df_gl['compte'] == cpt].copy()
+                    df_cpt = df_cpt.sort_values('date')
+
+                    lib_cpt = libelle_map.get(cpt, df_cpt['libelle_compte'].iloc[0] if not df_cpt.empty else '')
+                    budget_cpt = bud_map.get(cpt, 0) or 0
+                    total_d    = df_cpt['montant_du'].sum()
+                    total_p    = df_cpt['montant_paye'].sum()
+                    solde_cpt  = total_d - total_p
+                    ecart_bud  = total_d - float(budget_cpt)
+
+                    # Couleur entête selon dépassement
+                    if float(budget_cpt) > 0:
+                        if ecart_bud > 0:
+                            badge = f"🔴 Dépassement {ecart_bud:+,.2f} €"
+                            hdr_color = "#4a1a1a"
+                        elif ecart_bud < -0.01:
+                            badge = f"🟢 Économie {abs(ecart_bud):,.2f} €"
+                            hdr_color = "#1a3a2a"
+                        else:
+                            badge = "✅ Budget exact"
+                            hdr_color = "#1a2a3a"
+                    else:
+                        badge = "⚪ Pas de budget"
+                        hdr_color = "#2a2a2a"
+
+                    with st.expander(
+                        f"**{cpt}** — {lib_cpt}  |  {len(df_cpt)} écritures  |  "
+                        f"Débit: {total_d:,.2f} €  |  Réglé: {total_p:,.2f} €  |  {badge}",
+                        expanded=(len(comptes_actifs) == 1)
+                    ):
+                        # Entête coloré
+                        st.markdown(
+                            f"<div style='background:{hdr_color};padding:10px 14px;border-radius:6px;"
+                            f"margin-bottom:8px;'>"
+                            f"<span style='font-size:1.1em;font-weight:bold;color:#eee;'>"
+                            f"Compte {cpt} — {lib_cpt}</span><br>"
+                            f"<span style='color:#aaa;font-size:0.9em;'>"
+                            f"Budget: {float(budget_cpt):,.2f} €  |  "
+                            f"Classe {df_cpt['classe'].iloc[0]}  |  {badge}</span></div>",
+                            unsafe_allow_html=True
+                        )
+
+                        # Tableau des écritures avec solde cumulé
+                        rows = []
+                        solde_cum = 0.0
+                        for _, r in df_cpt.iterrows():
+                            solde_cum += float(r['montant_du'])
+                            rows.append({
+                                'Date':        r['date'].strftime('%d/%m/%Y') if pd.notna(r['date']) else '—',
+                                'Fournisseur': str(r.get('fournisseur','') or ''),
+                                'Libellé':     str(r.get('libelle','') or ''),
+                                'Débit (€)':   float(r['montant_du']),
+                                'Réglé (€)':   float(r['montant_paye']),
+                                'Reste (€)':   float(r['montant_du']) - float(r['montant_paye']),
+                                'Solde cumulé (€)': round(solde_cum, 2),
+                            })
+
+                        # Ligne de total
+                        rows.append({
+                            'Date':        '**TOTAL**',
+                            'Fournisseur': '',
+                            'Libellé':     f'{len(df_cpt)} écritures',
+                            'Débit (€)':   total_d,
+                            'Réglé (€)':   total_p,
+                            'Reste (€)':   solde_cpt,
+                            'Solde cumulé (€)': total_d,
+                        })
+
+                        df_show = pd.DataFrame(rows)
+                        st.dataframe(
+                            df_show,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                'Débit (€)':        st.column_config.NumberColumn("Débit (€)",   format="%.2f"),
+                                'Réglé (€)':        st.column_config.NumberColumn("Réglé (€)",   format="%.2f"),
+                                'Reste (€)':        st.column_config.NumberColumn("Reste (€)",   format="%.2f"),
+                                'Solde cumulé (€)': st.column_config.NumberColumn("Solde cum. (€)", format="%.2f"),
+                            }
+                        )
+
+                        # Mini-ligne budget vs réel
+                        if float(budget_cpt) > 0:
+                            pct_consomme = min(total_d / float(budget_cpt) * 100, 100)
+                            c1b, c2b, c3b = st.columns(3)
+                            c1b.metric("Budget", f"{float(budget_cpt):,.2f} €")
+                            c2b.metric("Dépensé", f"{total_d:,.2f} €", delta=f"{ecart_bud:+,.2f} €",
+                                       delta_color="inverse")
+                            c3b.metric("Consommé", f"{pct_consomme:.1f}%")
+                            st.progress(int(pct_consomme))
+
+                # ---- Tableau de synthèse final ----
+                st.divider()
+                st.subheader("📊 Synthèse par compte")
+                synth_rows = []
+                for cpt in comptes_actifs:
+                    df_c = df_gl[df_gl['compte'] == cpt]
+                    bud  = float(bud_map.get(cpt, 0) or 0)
+                    dep  = float(df_c['montant_du'].sum())
+                    pay  = float(df_c['montant_paye'].sum())
+                    synth_rows.append({
+                        'Compte':     cpt,
+                        'Libellé':    libelle_map.get(cpt, ''),
+                        'Classe':     str(classe_map.get(cpt, '')),
+                        'Budget (€)': bud,
+                        'Débit (€)':  dep,
+                        'Réglé (€)':  pay,
+                        'Reste (€)':  dep - pay,
+                        'Écart/Budget (€)': dep - bud,
+                        '% Consommé': round(dep/bud*100, 1) if bud > 0 else None,
+                    })
+
+                # Ligne TOTAL
+                synth_rows.append({
+                    'Compte':     'TOTAL',
+                    'Libellé':    '',
+                    'Classe':     '',
+                    'Budget (€)': sum(r['Budget (€)'] for r in synth_rows),
+                    'Débit (€)':  sum(r['Débit (€)']  for r in synth_rows),
+                    'Réglé (€)':  sum(r['Réglé (€)']  for r in synth_rows),
+                    'Reste (€)':  sum(r['Reste (€)']  for r in synth_rows),
+                    'Écart/Budget (€)': sum(r['Écart/Budget (€)'] for r in synth_rows),
+                    '% Consommé': None,
+                })
+
+                df_synth = pd.DataFrame(synth_rows)
+                st.dataframe(
+                    df_synth,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'Budget (€)':        st.column_config.NumberColumn("Budget (€)",     format="%.2f"),
+                        'Débit (€)':         st.column_config.NumberColumn("Débit (€)",      format="%.2f"),
+                        'Réglé (€)':         st.column_config.NumberColumn("Réglé (€)",      format="%.2f"),
+                        'Reste (€)':         st.column_config.NumberColumn("Reste (€)",      format="%.2f"),
+                        'Écart/Budget (€)':  st.column_config.NumberColumn("Écart Bud. (€)", format="%+.2f"),
+                        '% Consommé':        st.column_config.NumberColumn("% Conso.",        format="%.1f%%"),
+                    }
+                )
+
+        # ==================== LISTE COMPLÈTE ====================
+        else:
+            if df_gl.empty:
+                st.info("Aucune écriture pour ces filtres.")
+            else:
+                df_list = df_gl.copy().sort_values(['compte','date'])
+                df_list['date_fmt'] = df_list['date'].dt.strftime('%d/%m/%Y')
+                cols_show = {
+                    'date_fmt':       'Date',
+                    'compte':         'Compte',
+                    'libelle_compte': 'Libellé compte',
+                    'classe':         'Classe',
+                    'fournisseur':    'Fournisseur',
+                    'libelle':        'Libellé',
+                    'montant_du':     'Débit (€)',
+                    'montant_paye':   'Réglé (€)',
+                }
+                cols_disp = [c for c in cols_show if c in df_list.columns]
+                df_list_show = df_list[cols_disp].copy()
+                df_list_show.columns = [cols_show[c] for c in cols_disp]
+                # Calcul Reste
+                if 'Débit (€)' in df_list_show.columns and 'Réglé (€)' in df_list_show.columns:
+                    df_list_show['Reste (€)'] = df_list_show['Débit (€)'] - df_list_show['Réglé (€)']
+
+                st.dataframe(
+                    df_list_show,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=600,
+                    column_config={
+                        'Débit (€)':  st.column_config.NumberColumn("Débit (€)",  format="%.2f"),
+                        'Réglé (€)':  st.column_config.NumberColumn("Réglé (€)",  format="%.2f"),
+                        'Reste (€)':  st.column_config.NumberColumn("Reste (€)",  format="%.2f"),
+                    }
+                )
 
 
 st.divider()
