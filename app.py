@@ -3513,7 +3513,9 @@ elif menu == "📒 Grand Livre":
         dep_gl['date']        = pd.to_datetime(dep_gl['date'], errors='coerce')
         dep_gl['compte']      = dep_gl['compte'].astype(str).str.strip()
         dep_gl['montant_du']  = pd.to_numeric(dep_gl['montant_du'],  errors='coerce').fillna(0)
-        dep_gl['montant_paye']= pd.to_numeric(dep_gl.get('montant_paye', 0), errors='coerce').fillna(0)
+        if 'montant_paye' not in dep_gl.columns:
+            dep_gl['montant_paye'] = 0.0
+        dep_gl['montant_paye'] = pd.to_numeric(dep_gl['montant_paye'], errors='coerce').fillna(0)
 
         # ---- Jointure plan comptable pour libellé ----
         if not plan_gl.empty:
