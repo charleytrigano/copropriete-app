@@ -4290,68 +4290,157 @@ elif menu == "📬 Communications":
     # 📧 EMAIL
     # ══════════════════════════════════
     if canal == "📧 Email":
-        smtp_cfg = get_smtp_config()
+        email_method = st.radio(
+            "📡 Méthode d'envoi",
+            ["🚀 Brevo (recommandé — gratuit)", "⚙️ SMTP (Gmail / OVH / autre)"],
+            horizontal=True, key="email_method",
+            help="Brevo ne nécessite pas de configuration complexe — juste une clé API gratuite"
+        )
 
-        with st.expander("⚙️ Configuration SMTP", expanded=not bool(smtp_cfg['user'])):
-            st.caption("Renseignez ces valeurs dans **secrets.toml** de votre app Streamlit "
-                       "(Settings → Secrets) pour ne pas les ressaisir à chaque fois.")
-            st.code("""[secrets]
-smtp_host     = "smtp.gmail.com"
-smtp_port     = 587
-smtp_user     = "votre@email.com"
-smtp_password = "mot_de_passe_application"
-smtp_from     = "Syndic Copropriété <votre@email.com>"
-""", language="toml")
-            smtp_host = st.text_input("Serveur SMTP", value=smtp_cfg['host'], key="smtp_h")
-            smtp_port = st.number_input("Port", value=smtp_cfg['port'], min_value=25, key="smtp_p")
-            smtp_user = st.text_input("Identifiant", value=smtp_cfg['user'], key="smtp_u")
-            smtp_pass = st.text_input("Mot de passe", value=smtp_cfg['password'],
-                                       type="password", key="smtp_pw")
-            smtp_from = st.text_input("Expéditeur affiché", value=smtp_cfg['from'] or smtp_cfg['user'],
-                                       key="smtp_f", placeholder="Syndic Résidence <mail@gmail.com>")
+        # ── BREVO ──────────────────────────────────────────────────
+        if email_method == "🚀 Brevo (recommandé — gratuit)":
+            with st.expander("⚙️ Configuration Brevo", expanded=True):
+                st.markdown("""
+**Brevo est gratuit jusqu'à 300 emails/jour** — aucune carte bancaire requise.
 
-        if st.button("📧 Envoyer les emails", type="primary", 
-                     disabled=(nb_dest == 0 or not corps.strip()),
-                     use_container_width=True, key="btn_send_email"):
-            if not smtp_user or not smtp_pass:
-                st.error("❌ Configurez le serveur SMTP avant d'envoyer.")
-            else:
-                progress = st.progress(0, text="Envoi en cours…")
-                ok_list, err_list = [], []
-                for i, (_, cop) in enumerate(destinataires.iterrows()):
-                    dest_email = str(cop.get('email','') or '')
-                    if not dest_email or dest_email in ('None','nan'):
-                        err_list.append(f"{cop['nom']} — pas d'email")
-                        continue
-                    corps_perso = corps.replace("{nom}", cop['nom']) if personnaliser else corps
-                    try:
-                        msg = MIMEMultipart('alternative')
-                        msg['Subject'] = sujet
-                        msg['From']    = smtp_from or smtp_user
-                        msg['To']      = dest_email
-                        msg.attach(MIMEText(corps_perso, 'plain', 'utf-8'))
-                        # Version HTML simple
-                        html_body = corps_perso.replace("\n","<br>")
-                        msg.attach(MIMEText(f"<html><body><p>{html_body}</p></body></html>",
-                                            'html', 'utf-8'))
-                        with smtplib.SMTP(smtp_host, int(smtp_port)) as srv:
-                            srv.ehlo(); srv.starttls(); srv.ehlo()
-                            srv.login(smtp_user, smtp_pass)
-                            srv.sendmail(smtp_user, dest_email, msg.as_string())
-                        ok_list.append(f"✅ {cop['nom']} ({dest_email})")
-                    except Exception as e:
-                        err_list.append(f"❌ {cop['nom']} — {e}")
-                    progress.progress((i+1)/nb_dest,
-                                      text=f"Envoi {i+1}/{nb_dest} — {cop['nom']}")
+**Étapes d'inscription (2 minutes) :**
+1. Allez sur [brevo.com](https://www.brevo.com) → Inscription gratuite
+2. Menu → **Paramètres → Clés API** → Générer une clé
+3. Copiez la clé et collez-la ci-dessous
+""")
+                try:
+                    brevo_key     = st.secrets.get("brevo_api_key", "")
+                    brevo_from_em = st.secrets.get("brevo_from_email", "")
+                    brevo_from_nm = st.secrets.get("brevo_from_name", "Syndic Copropriété")
+                except:
+                    brevo_key = brevo_from_em = brevo_from_nm = ""
 
-                progress.empty()
-                if ok_list:
-                    st.success(f"✅ {len(ok_list)} email(s) envoyé(s)")
-                    with st.expander("Détail des envois"):
-                        for l in ok_list: st.markdown(l)
-                if err_list:
-                    st.error(f"❌ {len(err_list)} erreur(s)")
-                    for l in err_list: st.markdown(l)
+                if not brevo_key:
+                    brevo_key     = st.text_input("🔑 Clé API Brevo", type="password",
+                                                  key="brevo_k", placeholder="xkeysib-...")
+                    brevo_from_em = st.text_input("📧 Votre email expéditeur",
+                                                  key="brevo_fe", placeholder="syndic@monimmeuble.fr")
+                    brevo_from_nm = st.text_input("👤 Nom expéditeur",
+                                                  key="brevo_fn", value="Syndic Copropriété")
+                else:
+                    st.success("✅ Clé API Brevo chargée depuis les secrets.")
+                    brevo_from_em = st.text_input("📧 Email expéditeur",
+                                                  value=brevo_from_em, key="brevo_fe2")
+                    brevo_from_nm = st.text_input("👤 Nom expéditeur",
+                                                  value=brevo_from_nm, key="brevo_fn2")
+                st.caption("Pour enregistrer définitivement : Streamlit Cloud → Settings → Secrets")
+                st.code('brevo_api_key    = "xkeysib-..."\nbrevo_from_email = "votre@email.fr"\nbrevo_from_name  = "Syndic Copropriété"', language="toml")
+
+            if st.button("📧 Envoyer via Brevo", type="primary",
+                         disabled=(nb_dest == 0 or not corps.strip()),
+                         use_container_width=True, key="btn_brevo"):
+                if not brevo_key or not brevo_from_em:
+                    st.error("❌ Renseignez la clé API Brevo et votre email expéditeur.")
+                else:
+                    import urllib.request, json as _json
+                    progress = st.progress(0, text="Envoi via Brevo…")
+                    ok_list, err_list = [], []
+                    for i, (_, cop) in enumerate(destinataires.iterrows()):
+                        dest_email = str(cop.get('email','') or '').strip()
+                        if not dest_email or dest_email in ('None','nan'):
+                            err_list.append(f"{cop['nom']} — pas d'email")
+                            continue
+                        corps_perso = corps.replace("{nom}", cop['nom']) if personnaliser else corps
+                        html_body   = corps_perso.replace("\n","<br>")
+                        payload = _json.dumps({
+                            "sender":      {"name": brevo_from_nm, "email": brevo_from_em},
+                            "to":          [{"email": dest_email, "name": cop['nom']}],
+                            "subject":     sujet,
+                            "textContent": corps_perso,
+                            "htmlContent": f"<html><body style='font-family:Arial,sans-serif'><p>{html_body}</p></body></html>",
+                        }).encode('utf-8')
+                        try:
+                            req = urllib.request.Request(
+                                "https://api.brevo.com/v3/smtp/email",
+                                data=payload,
+                                headers={
+                                    "accept":       "application/json",
+                                    "content-type": "application/json",
+                                    "api-key":      brevo_key,
+                                },
+                                method="POST"
+                            )
+                            with urllib.request.urlopen(req) as resp:
+                                resp.read()
+                            ok_list.append(f"✅ {cop['nom']} ({dest_email})")
+                        except Exception as e:
+                            err_list.append(f"❌ {cop['nom']} — {e}")
+                        progress.progress((i+1)/nb_dest,
+                                          text=f"Envoi {i+1}/{nb_dest} — {cop['nom']}")
+                    progress.empty()
+                    if ok_list:
+                        st.success(f"✅ {len(ok_list)} email(s) envoyé(s) via Brevo")
+                        with st.expander("Détail"):
+                            for l in ok_list: st.markdown(l)
+                    if err_list:
+                        st.error(f"❌ {len(err_list)} erreur(s)")
+                        for l in err_list: st.markdown(l)
+
+        # ── SMTP ───────────────────────────────────────────────────
+        else:
+            smtp_cfg = get_smtp_config()
+            with st.expander("⚙️ Configuration SMTP", expanded=not bool(smtp_cfg['user'])):
+                st.markdown("""
+**Gmail** : créez un [mot de passe d'application](https://myaccount.google.com/apppasswords)
+(Compte Google → Sécurité → Validation 2 étapes activée → Mots de passe des applications)
+
+**OVH / autre** : utilisez les paramètres SMTP de votre hébergeur.
+""")
+                smtp_host = st.text_input("Serveur SMTP", value=smtp_cfg['host'], key="smtp_h")
+                smtp_port = st.number_input("Port", value=smtp_cfg['port'], min_value=25, key="smtp_p")
+                smtp_user = st.text_input("Identifiant", value=smtp_cfg['user'], key="smtp_u")
+                smtp_pass = st.text_input("Mot de passe / Clé app", value=smtp_cfg['password'],
+                                           type="password", key="smtp_pw")
+                smtp_from = st.text_input("Expéditeur affiché",
+                                           value=smtp_cfg['from'] or smtp_cfg['user'],
+                                           key="smtp_f", placeholder="Syndic <mail@gmail.com>")
+
+            if st.button("📧 Envoyer via SMTP", type="primary",
+                         disabled=(nb_dest == 0 or not corps.strip()),
+                         use_container_width=True, key="btn_send_email"):
+                if not smtp_user or not smtp_pass:
+                    st.error("❌ Configurez le serveur SMTP avant d'envoyer.")
+                else:
+                    progress = st.progress(0, text="Envoi en cours…")
+                    ok_list, err_list = [], []
+                    for i, (_, cop) in enumerate(destinataires.iterrows()):
+                        dest_email = str(cop.get('email','') or '').strip()
+                        if not dest_email or dest_email in ('None','nan'):
+                            err_list.append(f"{cop['nom']} — pas d'email")
+                            continue
+                        corps_perso = corps.replace("{nom}", cop['nom']) if personnaliser else corps
+                        try:
+                            msg = MIMEMultipart('alternative')
+                            msg['Subject'] = sujet
+                            msg['From']    = smtp_from or smtp_user
+                            msg['To']      = dest_email
+                            msg.attach(MIMEText(corps_perso, 'plain', 'utf-8'))
+                            html_body = corps_perso.replace("\n","<br>")
+                            msg.attach(MIMEText(
+                                f"<html><body><p>{html_body}</p></body></html>",
+                                'html', 'utf-8'))
+                            with smtplib.SMTP(smtp_host, int(smtp_port)) as srv:
+                                srv.ehlo(); srv.starttls(); srv.ehlo()
+                                srv.login(smtp_user, smtp_pass)
+                                srv.sendmail(smtp_user, dest_email, msg.as_string())
+                            ok_list.append(f"✅ {cop['nom']} ({dest_email})")
+                        except Exception as e:
+                            err_list.append(f"❌ {cop['nom']} — {e}")
+                        progress.progress((i+1)/nb_dest,
+                                          text=f"Envoi {i+1}/{nb_dest} — {cop['nom']}")
+                    progress.empty()
+                    if ok_list:
+                        st.success(f"✅ {len(ok_list)} email(s) envoyé(s)")
+                        with st.expander("Détail des envois"):
+                            for l in ok_list: st.markdown(l)
+                    if err_list:
+                        st.error(f"❌ {len(err_list)} erreur(s)")
+                        for l in err_list: st.markdown(l)
 
     # ══════════════════════════════════
     # 💬 WHATSAPP
