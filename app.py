@@ -656,7 +656,7 @@ st.sidebar.title("Navigation")
 menu = st.sidebar.radio("Choisir une section", [
     "📊 Tableau de Bord", "💰 Budget", "📝 Dépenses",
     "👥 Copropriétaires", "🔄 Répartition", "🏛️ Loi Alur", "📈 Analyses", "📋 Plan Comptable",
-    "🏛 AG — Assemblée Générale", "📒 Grand Livre", "📑 Contrats Fournisseurs"
+    "🏛 AG — Assemblée Générale", "📒 Grand Livre", "📑 Contrats Fournisseurs", "📬 Communications"
 ])
 
 # ==================== TABLEAU DE BORD ====================
@@ -4119,6 +4119,379 @@ elif menu == "📑 Contrats Fournisseurs":
                     st.cache_data.clear(); st.rerun()
                 except Exception as e:
                     st.error(f"❌ {e}")
+
+
+# ==================== COMMUNICATIONS ====================
+elif menu == "📬 Communications":
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    import urllib.parse
+
+    st.markdown("<h1 class='main-header'>📬 Communications</h1>", unsafe_allow_html=True)
+    st.caption("Envoyez des emails, SMS ou messages WhatsApp aux copropriétaires")
+
+    # ── Chargement copropriétaires ──────────────────────────────
+    copro_comm = get_coproprietaires()
+    if copro_comm.empty:
+        st.error("❌ Impossible de charger les copropriétaires."); st.stop()
+    copro_comm = prepare_copro(copro_comm)
+    for col_c in ['email','telephone','whatsapp']:
+        if col_c not in copro_comm.columns:
+            copro_comm[col_c] = None if col_c != 'whatsapp' else False
+    copro_comm['whatsapp'] = copro_comm['whatsapp'].fillna(False).astype(bool)
+
+    # ── Configuration SMTP (depuis st.secrets ou saisie manuelle) ──
+    def get_smtp_config():
+        try:
+            return {
+                'host':     st.secrets.get("smtp_host", "smtp.gmail.com"),
+                'port':     int(st.secrets.get("smtp_port", 587)),
+                'user':     st.secrets.get("smtp_user", ""),
+                'password': st.secrets.get("smtp_password", ""),
+                'from':     st.secrets.get("smtp_from", ""),
+            }
+        except:
+            return {'host':'smtp.gmail.com','port':587,'user':'','password':'','from':''}
+
+    # ─────────────────────────────────────────────────────────────
+    # SÉLECTION DES DESTINATAIRES
+    # ─────────────────────────────────────────────────────────────
+    st.subheader("👥 Sélection des destinataires")
+
+    col_sel1, col_sel2 = st.columns([2, 1])
+    with col_sel1:
+        mode_sel = st.radio("Mode de sélection", 
+            ["✅ Tous", "🔍 Sélection manuelle", "📧 Avec email", "💬 WhatsApp uniquement"],
+            horizontal=True, key="comm_mode_sel")
+
+    with col_sel2:
+        canal = st.radio("Canal", ["📧 Email", "💬 WhatsApp", "📱 SMS"], 
+                         horizontal=True, key="comm_canal")
+
+    # Appliquer filtre selon canal pour les destinataires disponibles
+    if canal == "📧 Email":
+        dispo = copro_comm[copro_comm['email'].apply(
+            lambda x: bool(x) and str(x) not in ('','None','nan'))]
+    elif canal == "💬 WhatsApp":
+        dispo = copro_comm[copro_comm['whatsapp'] == True]
+    else:  # SMS
+        dispo = copro_comm[copro_comm['telephone'].apply(
+            lambda x: bool(x) and str(x) not in ('','None','nan'))]
+
+    # Sélection
+    if mode_sel == "✅ Tous":
+        destinataires = dispo
+    elif mode_sel == "📧 Avec email":
+        destinataires = copro_comm[copro_comm['email'].apply(
+            lambda x: bool(x) and str(x) not in ('','None','nan'))]
+        if canal != "📧 Email":
+            destinataires = destinataires[destinataires.index.isin(dispo.index)]
+    elif mode_sel == "💬 WhatsApp uniquement":
+        destinataires = copro_comm[copro_comm['whatsapp'] == True]
+        if canal != "💬 WhatsApp":
+            destinataires = destinataires[destinataires.index.isin(dispo.index)]
+    else:  # Sélection manuelle
+        noms_dispo = dispo['nom'].tolist()
+        sel_noms = st.multiselect("Choisir les copropriétaires", noms_dispo, 
+                                   default=[], key="comm_sel_noms")
+        destinataires = copro_comm[copro_comm['nom'].isin(sel_noms)]
+
+    # Résumé destinataires
+    nb_dest = len(destinataires)
+    if nb_dest == 0:
+        st.warning(f"⚠️ Aucun destinataire disponible pour le canal **{canal}**. "
+                   f"Vérifiez que les coordonnées sont renseignées dans **👥 Copropriétaires**.")
+    else:
+        with st.expander(f"✅ {nb_dest} destinataire(s) sélectionné(s)", expanded=False):
+            for _, r in destinataires.iterrows():
+                contact = r.get('email','') if canal=="📧 Email" else r.get('telephone','')
+                wa_badge = " 💬" if r.get('whatsapp') else ""
+                st.markdown(f"- **Lot {int(r.get('lot',0))}** — {r['nom']} | {contact}{wa_badge}")
+
+    st.divider()
+
+    # ─────────────────────────────────────────────────────────────
+    # RÉDACTION DU MESSAGE
+    # ─────────────────────────────────────────────────────────────
+    st.subheader("✍️ Message")
+
+    # Templates prédéfinis
+    templates = {
+        "— Choisir un modèle —": ("", ""),
+        "📋 Convocation AG": (
+            "Convocation Assemblée Générale — {residence}",
+            "Madame, Monsieur,\n\nNous avons le plaisir de vous convoquer à l'Assemblée Générale "
+            "de la copropriété qui se tiendra le [DATE] à [HEURE] au [LIEU].\n\n"
+            "L'ordre du jour sera le suivant :\n- [POINT 1]\n- [POINT 2]\n\n"
+            "Nous vous prions de bien vouloir agréer nos salutations distinguées.\n\nLe Syndic"
+        ),
+        "💰 Appel de charges": (
+            "Appel de charges — {residence}",
+            "Madame, Monsieur,\n\nNous vous informons qu'un appel de charges d'un montant de "
+            "[MONTANT] € est dû pour le [TRIMESTRE] [ANNÉE].\n\n"
+            "Merci de bien vouloir effectuer votre règlement avant le [DATE LIMITE].\n\n"
+            "RIB disponible sur demande.\n\nCordialement,\nLe Syndic"
+        ),
+        "🔧 Travaux — information": (
+            "Information travaux — {residence}",
+            "Madame, Monsieur,\n\nNous vous informons que des travaux de [NATURE DES TRAVAUX] "
+            "seront effectués du [DATE DÉBUT] au [DATE FIN].\n\n"
+            "Des perturbations sont possibles. Nous vous prions de nous excuser pour la gêne occasionnée.\n\n"
+            "Cordialement,\nLe Syndic"
+        ),
+        "⚠️ Impayé — relance": (
+            "Relance — Solde impayé — {residence}",
+            "Madame, Monsieur,\n\nSauf erreur de notre part, nous constatons un solde impayé "
+            "de [MONTANT] € sur votre compte copropriétaire.\n\n"
+            "Nous vous remercions de régulariser cette situation dans les meilleurs délais.\n\n"
+            "Cordialement,\nLe Syndic"
+        ),
+        "📝 Message libre": ("", ""),
+    }
+
+    tpl_choix = st.selectbox("📝 Modèle de message", list(templates.keys()), key="comm_tpl")
+    tpl_sujet, tpl_corps = templates[tpl_choix]
+    residence = "la copropriété"  # peut être personnalisé
+
+    col_msg1, col_msg2 = st.columns([2, 1])
+    with col_msg1:
+        if canal == "📧 Email":
+            sujet = st.text_input("Objet *", 
+                value=tpl_sujet.replace("{residence}", residence),
+                key="comm_sujet")
+        corps = st.text_area("Message *", 
+            value=tpl_corps.replace("\\n", "\n").replace("{residence}", residence),
+            height=250, key="comm_corps",
+            help="💡 Vous pouvez utiliser {nom} pour personnaliser avec le nom du destinataire")
+        personnaliser = st.checkbox("🎯 Personnaliser avec le nom ({nom})", value=True,
+                                    key="comm_perso",
+                                    help="Remplace {nom} par le nom de chaque destinataire")
+    with col_msg2:
+        st.markdown("**Aperçu**")
+        apercu_nom = destinataires.iloc[0]['nom'] if nb_dest > 0 else "Dupont"
+        corps_apercu = corps.replace("{nom}", apercu_nom) if personnaliser else corps
+        st.markdown(
+            f"<div style='background:#1a1a2e;padding:12px;border-radius:6px;"
+            f"font-size:0.85em;color:#ddd;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>"
+            f"{corps_apercu}</div>",
+            unsafe_allow_html=True
+        )
+        if nb_dest > 1:
+            st.caption(f"🔁 Ce message sera envoyé {nb_dest} fois (1 par destinataire)")
+
+    st.divider()
+
+    # ─────────────────────────────────────────────────────────────
+    # ENVOI
+    # ─────────────────────────────────────────────────────────────
+
+    # ══════════════════════════════════
+    # 📧 EMAIL
+    # ══════════════════════════════════
+    if canal == "📧 Email":
+        smtp_cfg = get_smtp_config()
+
+        with st.expander("⚙️ Configuration SMTP", expanded=not bool(smtp_cfg['user'])):
+            st.caption("Renseignez ces valeurs dans **secrets.toml** de votre app Streamlit "
+                       "(Settings → Secrets) pour ne pas les ressaisir à chaque fois.")
+            st.code("""[secrets]
+smtp_host     = "smtp.gmail.com"
+smtp_port     = 587
+smtp_user     = "votre@email.com"
+smtp_password = "mot_de_passe_application"
+smtp_from     = "Syndic Copropriété <votre@email.com>"
+""", language="toml")
+            smtp_host = st.text_input("Serveur SMTP", value=smtp_cfg['host'], key="smtp_h")
+            smtp_port = st.number_input("Port", value=smtp_cfg['port'], min_value=25, key="smtp_p")
+            smtp_user = st.text_input("Identifiant", value=smtp_cfg['user'], key="smtp_u")
+            smtp_pass = st.text_input("Mot de passe", value=smtp_cfg['password'],
+                                       type="password", key="smtp_pw")
+            smtp_from = st.text_input("Expéditeur affiché", value=smtp_cfg['from'] or smtp_cfg['user'],
+                                       key="smtp_f", placeholder="Syndic Résidence <mail@gmail.com>")
+
+        if st.button("📧 Envoyer les emails", type="primary", 
+                     disabled=(nb_dest == 0 or not corps.strip()),
+                     use_container_width=True, key="btn_send_email"):
+            if not smtp_user or not smtp_pass:
+                st.error("❌ Configurez le serveur SMTP avant d'envoyer.")
+            else:
+                progress = st.progress(0, text="Envoi en cours…")
+                ok_list, err_list = [], []
+                for i, (_, cop) in enumerate(destinataires.iterrows()):
+                    dest_email = str(cop.get('email','') or '')
+                    if not dest_email or dest_email in ('None','nan'):
+                        err_list.append(f"{cop['nom']} — pas d'email")
+                        continue
+                    corps_perso = corps.replace("{nom}", cop['nom']) if personnaliser else corps
+                    try:
+                        msg = MIMEMultipart('alternative')
+                        msg['Subject'] = sujet
+                        msg['From']    = smtp_from or smtp_user
+                        msg['To']      = dest_email
+                        msg.attach(MIMEText(corps_perso, 'plain', 'utf-8'))
+                        # Version HTML simple
+                        html_body = corps_perso.replace("\n","<br>")
+                        msg.attach(MIMEText(f"<html><body><p>{html_body}</p></body></html>",
+                                            'html', 'utf-8'))
+                        with smtplib.SMTP(smtp_host, int(smtp_port)) as srv:
+                            srv.ehlo(); srv.starttls(); srv.ehlo()
+                            srv.login(smtp_user, smtp_pass)
+                            srv.sendmail(smtp_user, dest_email, msg.as_string())
+                        ok_list.append(f"✅ {cop['nom']} ({dest_email})")
+                    except Exception as e:
+                        err_list.append(f"❌ {cop['nom']} — {e}")
+                    progress.progress((i+1)/nb_dest,
+                                      text=f"Envoi {i+1}/{nb_dest} — {cop['nom']}")
+
+                progress.empty()
+                if ok_list:
+                    st.success(f"✅ {len(ok_list)} email(s) envoyé(s)")
+                    with st.expander("Détail des envois"):
+                        for l in ok_list: st.markdown(l)
+                if err_list:
+                    st.error(f"❌ {len(err_list)} erreur(s)")
+                    for l in err_list: st.markdown(l)
+
+    # ══════════════════════════════════
+    # 💬 WHATSAPP
+    # ══════════════════════════════════
+    elif canal == "💬 WhatsApp":
+        st.info("💡 WhatsApp s'ouvre dans un nouvel onglet pour chaque destinataire. "
+                "Validez l'envoi dans WhatsApp Web ou l'app.")
+
+        if nb_dest > 0 and corps.strip():
+            st.subheader("🔗 Liens WhatsApp")
+            for _, cop in destinataires.iterrows():
+                tel = str(cop.get('telephone','') or '').strip()
+                # Normaliser le numéro : supprimer espaces, tirets, garder le +
+                tel_clean = ''.join(c for c in tel if c.isdigit() or c == '+')
+                if tel_clean.startswith('0'):
+                    tel_clean = '+33' + tel_clean[1:]  # France par défaut
+                tel_api = tel_clean.replace('+','')
+
+                corps_perso = corps.replace("{nom}", cop['nom']) if personnaliser else corps
+                msg_encode  = urllib.parse.quote(corps_perso)
+                wa_link     = f"https://wa.me/{tel_api}?text={msg_encode}"
+
+                col_wa1, col_wa2 = st.columns([3, 1])
+                with col_wa1:
+                    st.markdown(f"**Lot {int(cop.get('lot',0))}** — {cop['nom']} | 📱 {tel}")
+                with col_wa2:
+                    st.link_button(f"💬 Ouvrir WhatsApp", wa_link, use_container_width=True)
+
+            st.divider()
+            # Bouton "tout ouvrir" (JS)
+            links_js = [
+                f"https://wa.me/{''.join(c for c in str(r.get('telephone','') or '').replace(' ','') if c.isdigit() or c=='+').replace('+','').replace('0','33',1) if str(r.get('telephone','')).startswith('0') else ''.join(c for c in str(r.get('telephone','') or '').replace(' ','') if c.isdigit() or c=='+').replace('+','')}?text={urllib.parse.quote(corps.replace('{nom}', r['nom']) if personnaliser else corps)}"
+                for _, r in destinataires.iterrows()
+                if str(r.get('telephone','')).strip() not in ('','None','nan')
+            ]
+            if len(links_js) > 1:
+                js_open = "; ".join([f"window.open('{l}','_blank')" for l in links_js[:10]])
+                btn_html = (
+                    '<button onclick="' + js_open + '" style="background:#25D366;color:white;'
+                    'border:none;padding:10px 20px;border-radius:6px;cursor:pointer;'
+                    'font-size:1em;width:100%;">💬 Ouvrir tous les WhatsApp ('
+                    + str(min(len(links_js),10)) + ')</button>'
+                )
+                st.markdown(btn_html, unsafe_allow_html=True)
+                if len(links_js) > 10:
+                    st.warning("⚠️ Maximum 10 onglets simultanés. Envoyez par groupes.")
+        else:
+            if not corps.strip():
+                st.warning("Rédigez un message avant d'envoyer.")
+
+    # ══════════════════════════════════
+    # 📱 SMS
+    # ══════════════════════════════════
+    else:  # SMS
+        sms_tab1, sms_tab2 = st.tabs(["📋 Liens SMS (gratuit)", "🔌 Twilio API"])
+
+        with sms_tab1:
+            st.info("💡 Cliquez sur chaque lien pour ouvrir l'app SMS de votre appareil "
+                    "(fonctionne mieux sur mobile).")
+            if nb_dest > 0 and corps.strip():
+                for _, cop in destinataires.iterrows():
+                    tel = str(cop.get('telephone','') or '').strip()
+                    corps_perso = corps.replace("{nom}", cop['nom']) if personnaliser else corps
+                    sms_link = f"sms:{tel}?body={urllib.parse.quote(corps_perso)}"
+                    col_s1, col_s2 = st.columns([3,1])
+                    with col_s1:
+                        st.markdown(f"**Lot {int(cop.get('lot',0))}** — {cop['nom']} | 📱 {tel}")
+                    with col_s2:
+                        st.link_button("📱 SMS", sms_link, use_container_width=True)
+
+                # Numéros à copier en masse
+                st.divider()
+                st.markdown("**📋 Tous les numéros (à copier)**")
+                numeros = ", ".join([
+                    str(r.get('telephone','')) for _, r in destinataires.iterrows()
+                    if str(r.get('telephone','')).strip() not in ('','None','nan')
+                ])
+                st.code(numeros)
+            else:
+                if not corps.strip():
+                    st.warning("Rédigez un message avant d'envoyer.")
+
+        with sms_tab2:
+            st.markdown("#### 🔌 Envoi via Twilio")
+            st.caption("Nécessite un compte Twilio (gratuit pour tester). "
+                       "Configurez vos credentials dans Streamlit Secrets.")
+            st.code("""[secrets]
+twilio_account_sid = "ACxxxxxxxxxxxxxxxx"
+twilio_auth_token  = "xxxxxxxxxxxxxxxx"
+twilio_from_number = "+33xxxxxxxxx"
+""", language="toml")
+
+            try:
+                twilio_sid  = st.secrets.get("twilio_account_sid","")
+                twilio_tok  = st.secrets.get("twilio_auth_token","")
+                twilio_from = st.secrets.get("twilio_from_number","")
+            except:
+                twilio_sid = twilio_tok = twilio_from = ""
+
+            if not twilio_sid:
+                twilio_sid  = st.text_input("Account SID",  type="password", key="tw_sid")
+                twilio_tok  = st.text_input("Auth Token",   type="password", key="tw_tok")
+                twilio_from = st.text_input("Numéro Twilio (format +33...)", key="tw_from")
+
+            if st.button("📱 Envoyer les SMS via Twilio", type="primary",
+                         disabled=(nb_dest == 0 or not corps.strip()),
+                         use_container_width=True, key="btn_sms_twilio"):
+                if not twilio_sid or not twilio_tok:
+                    st.error("❌ Configurez Twilio avant d'envoyer.")
+                else:
+                    try:
+                        from twilio.rest import Client as TwilioClient
+                        client_tw = TwilioClient(twilio_sid, twilio_tok)
+                        ok_sms, err_sms = [], []
+                        prog_sms = st.progress(0, text="Envoi SMS…")
+                        for i, (_, cop) in enumerate(destinataires.iterrows()):
+                            tel = str(cop.get('telephone','') or '').strip()
+                            tel_clean = ''.join(c for c in tel if c.isdigit() or c == '+')
+                            if tel_clean.startswith('0'):
+                                tel_clean = '+33' + tel_clean[1:]
+                            corps_perso = corps.replace("{nom}", cop['nom']) if personnaliser else corps
+                            try:
+                                client_tw.messages.create(
+                                    body=corps_perso, from_=twilio_from, to=tel_clean)
+                                ok_sms.append(f"✅ {cop['nom']} ({tel})")
+                            except Exception as e:
+                                err_sms.append(f"❌ {cop['nom']} — {e}")
+                            prog_sms.progress((i+1)/nb_dest)
+                        prog_sms.empty()
+                        if ok_sms:
+                            st.success(f"✅ {len(ok_sms)} SMS envoyé(s)")
+                            with st.expander("Détail"):
+                                for l in ok_sms: st.markdown(l)
+                        if err_sms:
+                            st.error(f"❌ {len(err_sms)} erreur(s)")
+                            for l in err_sms: st.markdown(l)
+                    except ImportError:
+                        st.error("❌ Package Twilio non installé. Ajoutez `twilio` dans requirements.txt")
+                    except Exception as e:
+                        st.error(f"❌ Erreur Twilio : {e}")
 
 
 st.divider()
