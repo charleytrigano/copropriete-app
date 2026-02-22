@@ -23,6 +23,211 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ==================== FORMULAIRE PUBLIC LOCATAIRES ====================
+# Détection du paramètre ?fiche=TOKEN dans l'URL
+_qp = st.query_params
+if "fiche" in _qp:
+    import hashlib, json as _json, urllib.request as _ureq, urllib.parse as _uparse
+
+    _token = _qp["fiche"]
+
+    # Retrouver la fiche via le token
+    def _get_fiche_by_token(token):
+        try:
+            r = supabase.table('fiches_tokens').select('*').eq('token', token).eq('actif', True).execute()
+            return r.data[0] if r.data else None
+        except:
+            return None
+
+    _fiche = _get_fiche_by_token(_token)
+
+    st.markdown("""
+    <style>
+    #MainMenu, header, footer, [data-testid="stSidebar"] { display: none !important; }
+    .block-container { max-width: 700px !important; margin: 0 auto; padding-top: 2rem; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    if _fiche is None:
+        st.error("❌ Ce lien est invalide ou a expiré.")
+        st.info("Contactez votre syndic pour obtenir un nouveau lien.")
+        st.stop()
+
+    _prop_nom  = _fiche.get('proprietaire_nom','')
+    _prop_id   = _fiche.get('proprietaire_nom','')  # nom utilisé comme clé
+
+    # Charger tous les lots de ce propriétaire
+    try:
+        _lots_r = supabase.table('coproprietaires').select('*').eq('nom', _prop_nom).execute()
+        _lots   = _lots_r.data or []
+    except:
+        _lots = []
+
+    # En-tête
+    st.markdown(f"""
+    <div style="text-align:center;margin-bottom:2rem;">
+      <div style="font-size:2.5rem;">🏢</div>
+      <h2 style="color:#1f77b4;">Fiche Locataire</h2>
+      <p style="color:#aaa;">Copropriété — Mise à jour annuaire</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f"Bonjour **{_prop_nom.split('(')[0].strip()}**,")
+    st.markdown("Merci de renseigner les informations de vos locataires actuels. "
+                "Ces données nous permettront de mettre à jour les **boîtes aux lettres** "
+                "et l'**interphone** de la résidence.")
+    st.divider()
+
+    USAGE_LABELS = {
+        'parking':'🅿️ Parking','studio':'🏠 Studio','studio ':'🏠 Studio',
+        '2pieces':'🏠 2 pièces','2 pieces':'🏠 2 pièces',
+        '2 pieces duplex':'🏠 2 pièces duplex','3 pieces':'🏠 3 pièces',
+        '3 pieces duplex':'🏠 3 pièces duplex',
+    }
+
+    _appts = [l for l in _lots if 'parking' not in str(l.get('usage','')).lower()]
+    _pks   = [l for l in _lots if 'parking' in str(l.get('usage','')).lower()]
+
+    if not _appts and not _pks:
+        st.warning("Aucun lot trouvé pour ce propriétaire.")
+        st.stop()
+
+    with st.form("form_public_fiche"):
+        _responses = []
+
+        if _appts:
+            st.markdown("### 🏠 Appartement(s)")
+            for _lot in _appts:
+                _lot_num = _lot.get('lot','?')
+                _etage   = _lot.get('etage','?')
+                _usage   = USAGE_LABELS.get(str(_lot.get('usage','')).strip().lower(),
+                                            str(_lot.get('usage','')))
+                _lot_id  = int(_lot['id'])
+
+                st.markdown(f"**{_usage} — Lot {_lot_num} — {_etage}**")
+                _c1, _c2 = st.columns(2)
+                with _c1:
+                    _occ = st.radio(f"Occupation lot {_lot_num}",
+                                    ["J'occupe moi-même", "Loué"],
+                                    key=f"occ_{_lot_id}", horizontal=True)
+                    _l_prenom = st.text_input("Prénom du locataire", key=f"lp_{_lot_id}")
+                    _l_nom    = st.text_input("Nom du locataire",    key=f"ln_{_lot_id}")
+                with _c2:
+                    _l_email = st.text_input("Email du locataire",  key=f"le_{_lot_id}")
+                    _l_tel   = st.text_input("Téléphone",           key=f"lt_{_lot_id}")
+                    _l_bal   = st.text_input("Étiquette BAL souhaitée",
+                                             key=f"lb_{_lot_id}",
+                                             placeholder=f"Ex: DUPONT — Lot {_lot_num}",
+                                             help="Nom à inscrire sur la boîte aux lettres")
+                    _l_iph   = st.text_input("Étiquette Interphone",
+                                             key=f"li_{_lot_id}",
+                                             placeholder="Ex: DUPONT",
+                                             help="Nom à afficher sur l'interphone")
+                st.divider()
+                _responses.append({
+                    'lot_id': _lot_id, 'lot_num': _lot_num,
+                    'occupation': _occ,
+                    'prenom': _l_prenom, 'nom': _l_nom,
+                    'email': _l_email, 'telephone': _l_tel,
+                    'label_bal': _l_bal, 'label_interphone': _l_iph,
+                    'is_parking': False,
+                })
+
+        if _pks:
+            st.markdown("### 🅿️ Parking(s)")
+            for _lot in _pks:
+                _lot_num = _lot.get('lot','?')
+                _etage   = _lot.get('etage','?')
+                _lot_id  = int(_lot['id'])
+                st.markdown(f"**🅿️ Parking — Lot {_lot_num} — {_etage}**")
+                _pk_occ = st.radio(f"Parking lot {_lot_num}",
+                                   ["J'utilise moi-même", "Loué à quelqu'un"],
+                                   key=f"pk_{_lot_id}", horizontal=True)
+                if _pk_occ == "Loué à quelqu'un":
+                    _pk_nom = st.text_input("Nom du locataire parking", key=f"pkn_{_lot_id}")
+                else:
+                    _pk_nom = ""
+                _responses.append({
+                    'lot_id': _lot_id, 'lot_num': _lot_num,
+                    'occupation': _pk_occ, 'nom': _pk_nom, 'prenom': '',
+                    'email': '', 'telephone': '', 'label_bal': '', 'label_interphone': '',
+                    'is_parking': True,
+                })
+
+        _notes_gen = st.text_area("💬 Remarques éventuelles", key="notes_gen", height=80)
+        _submit    = st.form_submit_button("✅ Envoyer ma fiche", type="primary",
+                                           use_container_width=True)
+
+    if _submit:
+        try:
+            _today = pd.Timestamp.today().strftime('%Y-%m-%d')
+            _saved = 0
+            for _r in _responses:
+                if _r['is_parking']:
+                    continue  # Les parkings : info simple, pas de locataire à enregistrer
+                _is_loue = _r['occupation'] == 'Loué'
+                if _is_loue and _r['nom'].strip():
+                    # Désactiver l'ancien locataire actif si existant
+                    _ex = supabase.table('locataires').select('id').eq(
+                        'lot_id', _r['lot_id']).eq('actif', True).execute()
+                    for _ex_row in (_ex.data or []):
+                        supabase.table('locataires').update(
+                            {'actif': False, 'date_sortie': _today}
+                        ).eq('id', _ex_row['id']).execute()
+                    # Insérer le nouveau locataire
+                    supabase.table('locataires').insert({
+                        'lot_id':            _r['lot_id'],
+                        'prenom':            _r['prenom'].strip() or None,
+                        'nom':               _r['nom'].strip(),
+                        'email':             _r['email'].strip() or None,
+                        'telephone':         _r['telephone'].strip() or None,
+                        'label_bal':         _r['label_bal'].strip() or None,
+                        'label_interphone':  _r['label_interphone'].strip() or None,
+                        'date_entree':       _today,
+                        'actif':             True,
+                        'notes':             _notes_gen.strip() or None,
+                    }).execute()
+                    _saved += 1
+
+            # Marquer le token comme utilisé
+            supabase.table('fiches_tokens').update(
+                {'utilise': True}
+            ).eq('token', _token).execute()
+
+            st.success("✅ Merci ! Vos informations ont bien été enregistrées.")
+            st.balloons()
+            st.info("Vous pouvez fermer cette page. Le syndic a été notifié.")
+
+            # Notifier le syndic par email si Brevo configuré
+            try:
+                _brevo_key  = st.secrets.get("brevo_api_key","")
+                _brevo_from = st.secrets.get("brevo_from_email","")
+                if _brevo_key and _brevo_from:
+                    import json as _j2
+                    _body = f"Fiche locataire reçue de {_prop_nom}\n\n"
+                    for _r in _responses:
+                        if not _r['is_parking'] and _r['nom'].strip():
+                            _body += f"Lot {_r['lot_num']}: {_r['prenom']} {_r['nom']} — {_r['email']} — {_r['telephone']}\n"
+                    _body += f"\nNotes: {_notes_gen}"
+                    _payload = _j2.dumps({
+                        "sender": {"name":"Copropriété","email":_brevo_from},
+                        "to": [{"email":_brevo_from}],
+                        "subject": f"📋 Fiche locataire reçue — {_prop_nom.split('(')[0].strip()}",
+                        "textContent": _body,
+                    }).encode('utf-8')
+                    _req2 = _ureq.Request("https://api.brevo.com/v3/smtp/email",
+                        data=_payload,
+                        headers={"accept":"application/json","content-type":"application/json",
+                                 "api-key":_brevo_key}, method="POST")
+                    _ureq.urlopen(_req2)
+            except:
+                pass
+
+        except Exception as _e:
+            st.error(f"❌ Erreur lors de l'enregistrement : {_e}")
+
+    st.stop()  # Ne pas afficher le reste de l'app
+
 # v20260218_111053 — Fix Alur base = total_bud
 # ==================== FONCTIONS DB ====================
 def get_budget():
@@ -4586,9 +4791,9 @@ elif menu == "🏠 Locataires":
                   '3 pieces duplex':'3 pièces duplex'}
         return f"{e} {labels.get(u, u.title())}"
 
-    loc_tab1, loc_tab2, loc_tab3, loc_tab4 = st.tabs([
+    loc_tab1, loc_tab2, loc_tab3, loc_tab4, loc_tab5 = st.tabs([
         "🏠 Fiches par propriétaire", "📋 Tous les locataires",
-        "🏷️ BAL & Interphone", "📊 Statistiques"
+        "🏷️ BAL & Interphone", "📊 Statistiques", "📨 Envoyer les fiches"
     ])
 
     # ══════════════════════════════════════════════════════════════
@@ -4911,6 +5116,214 @@ elif menu == "🏠 Locataires":
         st.markdown(html_tags, unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════
+    # TAB 5 — ENVOYER LES FICHES
+    # ══════════════════════════════════════════════════════════════
+    with loc_tab5:
+        st.subheader("📨 Envoyer les fiches de renseignement")
+        st.caption("Générez un lien unique par propriétaire et envoyez-le par email, WhatsApp ou SMS.")
+
+        import hashlib as _hl
+        import urllib.parse as _up2
+
+        # URL de base de l'app
+        try:
+            _app_url = st.secrets.get("app_url", "")
+        except:
+            _app_url = ""
+
+        _app_url_input = st.text_input(
+            "🔗 URL de votre app Streamlit",
+            value=_app_url or "https://votre-app.streamlit.app",
+            key="app_url_input",
+            help="Copiez l'URL complète de votre app depuis le navigateur"
+        )
+        if not _app_url_input.startswith("http"):
+            st.warning("⚠️ Entrez l'URL complète (commençant par https://)")
+
+        st.divider()
+
+        # Sélection des propriétaires à contacter
+        st.markdown("#### 👥 Sélection des propriétaires")
+        _noms_all = sorted(copro_loc['nom'].unique())
+
+        _mode_sel_f = st.radio("Sélection",
+            ["✅ Tous les propriétaires", "🔍 Sélection manuelle"],
+            horizontal=True, key="fiche_sel_mode")
+
+        if _mode_sel_f == "🔍 Sélection manuelle":
+            _sel_props = st.multiselect("Propriétaires", _noms_all, key="fiche_sel_props")
+        else:
+            _sel_props = _noms_all
+
+        st.metric("📨 Fiches à envoyer", len(_sel_props))
+        st.divider()
+
+        # Personnalisation du message
+        st.markdown("#### ✍️ Message d'accompagnement")
+        _canal_f = st.radio("Canal", ["📧 Email", "💬 WhatsApp", "📱 SMS"],
+                            horizontal=True, key="fiche_canal")
+
+        _msg_defaut = """Bonjour {nom},
+
+Dans le cadre de la mise à jour de notre annuaire (boîtes aux lettres et interphone), merci de bien vouloir remplir la fiche ci-dessous :
+
+🔗 {lien}
+
+Cette démarche ne prend que 2 minutes.
+
+Merci de votre collaboration.
+Cordialement,
+Le Syndic"""
+
+        _msg_template = st.text_area("Message (utilisez {nom} et {lien})",
+            value=_msg_defaut, height=200, key="fiche_msg")
+
+        if _canal_f == "📧 Email":
+            _sujet_f = st.text_input("Objet de l'email",
+                value="📋 Mise à jour annuaire — Fiche locataire à remplir",
+                key="fiche_sujet")
+
+        st.divider()
+
+        # Génération et envoi
+        if st.button("🚀 Générer les liens et envoyer", type="primary",
+                     use_container_width=True, key="btn_send_fiches",
+                     disabled=not _sel_props):
+
+            _brevo_key_f  = ""
+            _brevo_from_f = ""
+            _brevo_name_f = "Syndic Copropriété"
+            try:
+                _brevo_key_f  = st.secrets.get("brevo_api_key","")
+                _brevo_from_f = st.secrets.get("brevo_from_email","")
+                _brevo_name_f = st.secrets.get("brevo_from_name","Syndic Copropriété")
+            except:
+                pass
+
+            import urllib.request as _ureq3, json as _j3, uuid as _uuid3
+            _today_str = pd.Timestamp.today().strftime('%Y-%m-%d')
+
+            _progress_f = st.progress(0, text="Génération des liens…")
+            _ok_f, _err_f, _liens_generes = [], [], []
+
+            for _i_f, _nom_prop in enumerate(_sel_props):
+                # Récupérer le contact du propriétaire
+                _rows_p = copro_loc[copro_loc['nom'] == _nom_prop]
+                if _rows_p.empty:
+                    _err_f.append(f"❌ {_nom_prop} — introuvable")
+                    continue
+                _row_p  = _rows_p.iloc[0]
+                _email_p = str(_row_p.get('email','') or '').strip()
+                _tel_p   = str(_row_p.get('telephone','') or '').strip()
+
+                # Générer un token unique
+                _token_val = _uuid3.uuid4().hex
+
+                # Stocker dans fiches_tokens
+                try:
+                    # Désactiver les anciens tokens pour ce propriétaire
+                    supabase.table('fiches_tokens').update(
+                        {'actif': False}
+                    ).eq('proprietaire_nom', _nom_prop).execute()
+
+                    # Créer le nouveau token
+                    supabase.table('fiches_tokens').insert({
+                        'token':            _token_val,
+                        'proprietaire_nom': _nom_prop,
+                        'actif':            True,
+                        'utilise':          False,
+                        'created_at':       _today_str,
+                    }).execute()
+                except Exception as _e_tok:
+                    _err_f.append(f"❌ {_nom_prop} — erreur token: {_e_tok}")
+                    continue
+
+                # Construire le lien
+                _lien_f = f"{_app_url_input.rstrip('/')}?fiche={_token_val}"
+                _liens_generes.append({'Propriétaire': _nom_prop, 'Lien': _lien_f,
+                                       'Email': _email_p, 'Tel': _tel_p})
+
+                # Personnaliser le message
+                _nom_court = _nom_prop.split('(')[0].strip()
+                _msg_perso = _msg_template.replace('{nom}', _nom_court).replace('{lien}', _lien_f)
+
+                # Envoi selon canal
+                if _canal_f == "📧 Email":
+                    if not _email_p or _email_p in ('None','nan'):
+                        _err_f.append(f"⚠️ {_nom_prop} — pas d'email")
+                    elif not _brevo_key_f:
+                        _err_f.append(f"⚠️ {_nom_prop} — Brevo non configuré, lien généré uniquement")
+                    else:
+                        try:
+                            _html_f = _msg_perso.replace("\n","<br>")
+                            _pl_f = _j3.dumps({
+                                "sender": {"name": _brevo_name_f, "email": _brevo_from_f},
+                                "to": [{"email": _email_p, "name": _nom_court}],
+                                "subject": _sujet_f,
+                                "textContent": _msg_perso,
+                                "htmlContent": f"<html><body style='font-family:Arial'><p>{_html_f}</p></body></html>",
+                            }).encode('utf-8')
+                            _req_f = _ureq3.Request("https://api.brevo.com/v3/smtp/email",
+                                data=_pl_f,
+                                headers={"accept":"application/json",
+                                         "content-type":"application/json",
+                                         "api-key":_brevo_key_f}, method="POST")
+                            _ureq3.urlopen(_req_f)
+                            _ok_f.append(f"✅ {_nom_prop} ({_email_p})")
+                        except Exception as _e_br:
+                            _err_f.append(f"❌ {_nom_prop} — {_e_br}")
+                else:
+                    # WhatsApp / SMS : liens générés, pas d'envoi automatique
+                    _ok_f.append(f"🔗 {_nom_prop} — lien généré")
+
+                _progress_f.progress((_i_f+1)/len(_sel_props),
+                                     text=f"{_i_f+1}/{len(_sel_props)} — {_nom_prop[:30]}")
+
+            _progress_f.empty()
+
+            # Résultats
+            if _ok_f:
+                st.success(f"✅ {len(_ok_f)} fiche(s) traitée(s)")
+                with st.expander("Détail"):
+                    for _l in _ok_f: st.markdown(_l)
+
+            if _err_f:
+                st.warning(f"⚠️ {len(_err_f)} avertissement(s)")
+                for _l in _err_f: st.markdown(_l)
+
+            # Tableau des liens générés (pour WhatsApp/SMS ou backup)
+            if _liens_generes:
+                st.divider()
+                st.markdown("#### 🔗 Liens générés")
+                df_liens = pd.DataFrame(_liens_generes)
+
+                if _canal_f in ("💬 WhatsApp", "📱 SMS"):
+                    st.info("Cliquez sur chaque lien pour l'envoyer manuellement.")
+                    for _, _lr in df_liens.iterrows():
+                        _nom_c  = _lr['Propriétaire'].split('(')[0].strip()
+                        _tel_c  = str(_lr.get('Tel','') or '').strip()
+                        _msg_wa = _msg_template.replace('{nom}', _nom_c).replace('{lien}', _lr['Lien'])
+                        _col_a, _col_b = st.columns([3,1])
+                        with _col_a:
+                            st.markdown(f"**{_lr['Propriétaire']}** | 📱 {_tel_c}")
+                            st.code(_lr['Lien'], language=None)
+                        with _col_b:
+                            if _canal_f == "💬 WhatsApp" and _tel_c:
+                                _tel_wa = ''.join(c for c in _tel_c if c.isdigit() or c=='+')
+                                if _tel_wa.startswith('0'): _tel_wa = '33' + _tel_wa[1:]
+                                _tel_wa = _tel_wa.replace('+','')
+                                _wa_lien = f"https://wa.me/{_tel_wa}?text={_up2.quote(_msg_wa)}"
+                                st.link_button("💬 WhatsApp", _wa_lien, use_container_width=True)
+                            elif _canal_f == "📱 SMS" and _tel_c:
+                                _sms_lien = f"sms:{_tel_c}?body={_up2.quote(_msg_wa)}"
+                                st.link_button("📱 SMS", _sms_lien, use_container_width=True)
+
+                # Export CSV des liens
+                csv_liens = df_liens.to_csv(index=False, sep=';').encode('utf-8-sig')
+                st.download_button("📥 Exporter les liens CSV", data=csv_liens,
+                                   file_name="fiches_liens.csv", mime="text/csv", key="dl_liens")
+
+        # ══════════════════════════════════════════════════════════════
     # TAB 4 — STATISTIQUES
     # ══════════════════════════════════════════════════════════════
     with loc_tab4:
