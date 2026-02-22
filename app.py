@@ -3090,7 +3090,33 @@ elif menu == "🏛 AG — Assemblée Générale":
         except:
             return pd.DataFrame()
 
-    ag_tab1, ag_tab2, ag_tab3 = st.tabs(["📋 Consulter / Répondre", "➕ Nouvelle AG", "🗑️ Gérer"])
+    @st.cache_data(ttl=30)
+    def get_ag_docs(ag_id):
+        try:
+            r = supabase.table('ag_documents').select('*').eq('ag_id', ag_id).order('created_at').execute()
+            return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+        except:
+            return pd.DataFrame()
+
+    def upload_ag_doc(ag_id, file_bytes, filename):
+        import uuid as _uuid
+        ext  = filename.rsplit('.', 1)[-1].lower()
+        safe = filename.replace(' ', '_')
+        path = f"ag/{ag_id}/{_uuid.uuid4().hex[:8]}_{safe}"
+        ctype_map = {
+            'pdf':'application/pdf','jpg':'image/jpeg','jpeg':'image/jpeg',
+            'png':'image/png','mp4':'video/mp4','mov':'video/quicktime',
+            'avi':'video/x-msvideo','doc':'application/msword',
+            'docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'xls':'application/vnd.ms-excel',
+            'xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        }
+        ctype = ctype_map.get(ext, 'application/octet-stream')
+        supabase.storage.from_('factures').upload(path, file_bytes,
+            file_options={"content-type": ctype, "upsert": "true"})
+        return path
+
+    ag_tab1, ag_tab2, ag_tab3, ag_tab4 = st.tabs(["📋 Consulter / Répondre", "📎 Documents", "➕ Nouvelle AG", "🗑️ Gérer"])
 
     # ── ONGLET CONSULTER ────────────────────────────────────────
     with ag_tab1:
@@ -3246,8 +3272,138 @@ elif menu == "🏛 AG — Assemblée Générale":
                     st.download_button("⬇️ Télécharger le PV", pv_csv,
                         f"PV_AG_{sel_ag['date'].replace('/','_')}.csv", "text/csv")
 
-    # ── ONGLET NOUVELLE AG ──────────────────────────────────────
+    # ── ONGLET DOCUMENTS ────────────────────────────────────────
     with ag_tab2:
+        st.subheader("📎 Documents de l'AG")
+        ag_df_doc = get_ag_list()
+        if ag_df_doc.empty:
+            st.info("Aucune AG. Créez-en une d'abord.")
+        else:
+            ag_opts_doc = ag_df_doc.apply(lambda r: f"{r['date']} — {r['titre']}", axis=1).tolist()
+            sel_ag_doc  = st.selectbox("Sélectionner l'AG", ag_opts_doc, key="ag_doc_sel")
+            sel_ag_doc_id = int(ag_df_doc.iloc[ag_opts_doc.index(sel_ag_doc)]['id'])
+
+            docs_df = get_ag_docs(sel_ag_doc_id)
+
+            # ── Upload ──────────────────────────────────────────
+            st.markdown("#### 📤 Ajouter un document")
+            TYPES_DOCS = ["Devis", "Facture", "Photo / Plan", "Vidéo", "PV / Compte-rendu",
+                          "Rapport technique", "Contrat", "Autre"]
+            col_up1, col_up2 = st.columns([2,1])
+            with col_up1:
+                up_files = st.file_uploader(
+                    "PDF, images, vidéos, Word, Excel…",
+                    type=["pdf","jpg","jpeg","png","gif","webp",
+                          "mp4","mov","avi","doc","docx","xls","xlsx"],
+                    accept_multiple_files=True,
+                    key=f"ag_doc_up_{sel_ag_doc_id}"
+                )
+            with col_up2:
+                up_type    = st.selectbox("Type de document", TYPES_DOCS, key="ag_doc_type")
+                up_libelle = st.text_input("Description", placeholder="ex: Devis ascenseur OTIS",
+                                           key="ag_doc_lib")
+
+            if up_files:
+                if st.button(f"📤 Envoyer {len(up_files)} fichier(s)", type="primary",
+                             use_container_width=True, key="btn_ag_doc_up"):
+                    nb_ok = 0
+                    for f_up in up_files:
+                        try:
+                            path = upload_ag_doc(sel_ag_doc_id, f_up.read(), f_up.name)
+                            supabase.table('ag_documents').insert({
+                                'ag_id':      sel_ag_doc_id,
+                                'nom':        f_up.name,
+                                'type_doc':   up_type,
+                                'libelle':    up_libelle.strip() or f_up.name,
+                                'storage_path': path,
+                                'taille_ko':  round(f_up.size / 1024, 1),
+                            }).execute()
+                            nb_ok += 1
+                        except Exception as e:
+                            st.error(f"❌ {f_up.name} — {e}")
+                    if nb_ok:
+                        st.success(f"✅ {nb_ok} fichier(s) uploadé(s).")
+                        st.cache_data.clear(); st.rerun()
+
+            st.divider()
+
+            # ── Liste des documents ──────────────────────────────
+            if docs_df.empty:
+                st.info("Aucun document pour cette AG.")
+            else:
+                st.markdown(f"#### 📁 {len(docs_df)} document(s)")
+
+                # Grouper par type
+                types_presents = docs_df['type_doc'].dropna().unique() if 'type_doc' in docs_df.columns else ['Autre']
+                for doc_type in sorted(types_presents):
+                    grp = docs_df[docs_df['type_doc'] == doc_type] if 'type_doc' in docs_df.columns else docs_df
+                    st.markdown(f"**{doc_type}** ({len(grp)})")
+                    for _, doc in grp.iterrows():
+                        doc_path = str(doc.get('storage_path','') or '')
+                        doc_nom  = str(doc.get('nom', doc.get('libelle','Fichier')))
+                        doc_lib  = str(doc.get('libelle','') or '')
+                        doc_ko   = doc.get('taille_ko', 0)
+                        doc_id   = int(doc['id'])
+                        ext_doc  = doc_nom.rsplit('.',1)[-1].lower() if '.' in doc_nom else ''
+                        is_img   = ext_doc in ('jpg','jpeg','png','gif','webp')
+                        is_pdf   = ext_doc == 'pdf'
+                        is_vid   = ext_doc in ('mp4','mov','avi')
+
+                        with st.expander(
+                            f"{'🖼️' if is_img else '🎬' if is_vid else '📄'} "
+                            f"{doc_lib or doc_nom}  —  {doc_ko:.0f} Ko",
+                            expanded=False
+                        ):
+                            col_d1, col_d2 = st.columns([2,1])
+                            with col_d1:
+                                if doc_path:
+                                    try:
+                                        file_bytes_doc = get_facture_bytes(doc_path)
+                                        if file_bytes_doc:
+                                            if is_img:
+                                                st.image(file_bytes_doc, use_container_width=True)
+                                            elif is_pdf:
+                                                afficher_facture(doc_path, height=500)
+                                            elif is_vid:
+                                                st.video(file_bytes_doc)
+                                            else:
+                                                st.info(f"📄 Fichier {ext_doc.upper()} — utilisez le bouton télécharger")
+                                    except Exception as e:
+                                        st.warning(f"Aperçu indisponible : {e}")
+                            with col_d2:
+                                st.markdown(f"**Nom :** {doc_nom}")
+                                st.markdown(f"**Type :** {doc_type}")
+                                if doc_lib and doc_lib != doc_nom:
+                                    st.markdown(f"**Description :** {doc_lib}")
+                                st.markdown(f"**Taille :** {doc_ko:.0f} Ko")
+                                # Téléchargement
+                                if doc_path:
+                                    try:
+                                        fb = get_facture_bytes(doc_path)
+                                        if fb:
+                                            mime_map = {'pdf':'application/pdf','jpg':'image/jpeg',
+                                                       'jpeg':'image/jpeg','png':'image/png',
+                                                       'mp4':'video/mp4','mov':'video/quicktime'}
+                                            mime_dl = mime_map.get(ext_doc,'application/octet-stream')
+                                            st.download_button("⬇️ Télécharger", data=fb,
+                                                file_name=doc_nom, mime=mime_dl,
+                                                key=f"dl_agdoc_{doc_id}", use_container_width=True)
+                                    except:
+                                        pass
+                                # Supprimer
+                                if st.button("🗑️ Supprimer", key=f"del_agdoc_{doc_id}",
+                                             use_container_width=True):
+                                    try:
+                                        if doc_path:
+                                            supabase.storage.from_('factures').remove([doc_path])
+                                        supabase.table('ag_documents').delete().eq('id', doc_id).execute()
+                                        st.success("✅ Document supprimé.")
+                                        st.cache_data.clear(); st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ {e}")
+
+    # ── ONGLET NOUVELLE AG ──────────────────────────────────────
+    with ag_tab3:
         st.subheader("➕ Créer une nouvelle Assemblée Générale")
         with st.form("form_new_ag"):
             col1, col2 = st.columns(2)
@@ -3280,7 +3436,7 @@ elif menu == "🏛 AG — Assemblée Générale":
                         st.error(f"❌ {e}")
 
     # ── ONGLET GÉRER ────────────────────────────────────────────
-    with ag_tab3:
+    with ag_tab4:
         st.subheader("🗑️ Supprimer une Assemblée Générale")
         ag_df2 = get_ag_list()
         if ag_df2.empty:
@@ -3306,208 +3462,6 @@ elif menu == "🏛 AG — Assemblée Générale":
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ {e}")
-
-# ==================== ONGLET AG ====================
-elif menu == "🏛 AG — Assemblée Générale":
-    st.markdown("<h1 class='main-header'>🏛 Assemblée Générale</h1>", unsafe_allow_html=True)
-
-    @st.cache_data(ttl=30)
-    def get_ag_list():
-        try:
-            r = supabase.table('ag').select('*').order('date', desc=True).execute()
-            return pd.DataFrame(r.data) if r.data else pd.DataFrame()
-        except:
-            return pd.DataFrame()
-
-    @st.cache_data(ttl=30)
-    def get_ag_items(ag_id):
-        try:
-            r = supabase.table('ag_items').select('*').eq('ag_id', ag_id).order('ordre').execute()
-            return pd.DataFrame(r.data) if r.data else pd.DataFrame()
-        except:
-            return pd.DataFrame()
-
-    ag_tab1, ag_tab2, ag_tab3 = st.tabs(["📋 Consulter / Répondre", "➕ Nouvelle AG", "🗑️ Gérer"])
-
-    with ag_tab1:
-        ag_df = get_ag_list()
-        if ag_df.empty:
-            st.info("Aucune AG enregistrée. Créez-en une dans l'onglet **➕ Nouvelle AG**.")
-        else:
-            ag_options = ag_df.apply(lambda r: f"{r['date']} — {r['titre']}", axis=1).tolist()
-            sel_ag_label = st.selectbox("📅 Assemblée Générale", ag_options, key="ag_sel")
-            sel_ag = ag_df.iloc[ag_options.index(sel_ag_label)]
-            sel_ag_id = int(sel_ag['id'])
-
-            st.divider()
-            col_info1, col_info2, col_info3 = st.columns(3)
-            col_info1.metric("Date", sel_ag['date'])
-            col_info2.metric("Lieu", sel_ag.get('lieu') or '—')
-            col_info3.metric("Type", sel_ag.get('type_ag') or '—')
-            if sel_ag.get('description'):
-                st.caption(sel_ag['description'])
-            st.divider()
-
-            items_df = get_ag_items(sel_ag_id)
-
-            with st.expander("➕ Ajouter un point à l'ordre du jour", expanded=False):
-                with st.form(f"form_add_item_{sel_ag_id}"):
-                    col1, col2 = st.columns([1, 3])
-                    with col1:
-                        new_ordre = st.number_input("N° ordre", min_value=1,
-                            value=int(items_df['ordre'].max() + 1) if not items_df.empty and 'ordre' in items_df.columns else 1,
-                            step=1, key="new_item_ordre")
-                        new_type = st.selectbox("Type", ["Question","Résolution","Information","Vote"], key="new_item_type")
-                        new_vote = st.selectbox("Vote", ["—","Approuvé","Rejeté","Ajourné","Sans objet"], key="new_item_vote")
-                    with col2:
-                        new_titre = st.text_input("Titre *", key="new_item_titre")
-                        new_question = st.text_area("Question / Commentaire", height=100, key="new_item_question",
-                            placeholder="Texte de la question ou du point...")
-                        new_reponse = st.text_area("Réponse / Décision", height=100, key="new_item_reponse",
-                            placeholder="Réponse ou décision (peut être complétée plus tard)...")
-                    if st.form_submit_button("✅ Ajouter le point", use_container_width=True):
-                        if not new_titre:
-                            st.error("⚠️ Le titre est obligatoire.")
-                        else:
-                            try:
-                                supabase.table('ag_items').insert({
-                                    'ag_id': sel_ag_id, 'ordre': int(new_ordre),
-                                    'type': new_type, 'titre': new_titre.strip(),
-                                    'question': new_question.strip() if new_question else None,
-                                    'reponse': new_reponse.strip() if new_reponse else None,
-                                    'vote': new_vote if new_vote != "—" else None,
-                                }).execute()
-                                st.success("✅ Point ajouté.")
-                                st.cache_data.clear(); st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ {e}")
-
-            st.subheader(f"📋 Ordre du jour — {sel_ag['titre']}")
-            if items_df.empty:
-                st.info("Aucun point à l'ordre du jour. Ajoutez-en un ci-dessus.")
-            else:
-                VOTE_COLORS = {
-                    'Approuvé':   ('#1B5E20','#E8F5E9'),
-                    'Rejeté':     ('#B71C1C','#FFEBEE'),
-                    'Ajourné':    ('#E65100','#FFF3E0'),
-                    'Sans objet': ('#37474F','#ECEFF1'),
-                }
-                TYPE_EMOJI = {'Question':'❓','Résolution':'📜','Information':'ℹ️','Vote':'🗳️'}
-
-                for _, item in items_df.sort_values('ordre').iterrows():
-                    item_id = int(item['id'])
-                    vote = item.get('vote') or ''
-                    vote_color, vote_bg = VOTE_COLORS.get(vote, ('#1565C0','#E3F2FD'))
-                    type_emoji = TYPE_EMOJI.get(item.get('type',''), '📌')
-                    badge = (f"<span style='background:{vote_bg};color:{vote_color};"
-                             f"padding:2px 10px;border-radius:12px;font-size:0.8em;"
-                             f"font-weight:bold;border:1px solid {vote_color};'>{vote}</span>") if vote else ""
-
-                    st.markdown(
-                        f"<div style='background:#1E2130;border-left:4px solid {vote_color};"
-                        f"border-radius:6px;padding:10px 14px;margin-bottom:4px;'>"
-                        f"<b>{type_emoji} {int(item['ordre'])}. {item['titre']}</b>"
-                        f"{'&nbsp;&nbsp;' + badge if badge else ''}</div>",
-                        unsafe_allow_html=True)
-
-                    col_q, col_r = st.columns(2)
-                    with col_q:
-                        st.markdown("**🗣️ Question / Commentaire**")
-                        st.text_area("q", value=item.get('question') or '', height=120,
-                            disabled=True, key=f"q_ro_{item_id}", label_visibility="collapsed")
-                    with col_r:
-                        st.markdown("**✅ Réponse / Décision**")
-                        reponse_edit = st.text_area("r", value=item.get('reponse') or '', height=120,
-                            key=f"r_edit_{item_id}", label_visibility="collapsed",
-                            placeholder="Saisir la réponse ou décision...")
-
-                    col_v, col_s, col_del = st.columns([2, 2, 1])
-                    with col_v:
-                        vote_opts = ["—","Approuvé","Rejeté","Ajourné","Sans objet"]
-                        vote_idx = vote_opts.index(vote) if vote in vote_opts else 0
-                        vote_edit = st.selectbox("vote", vote_opts, index=vote_idx,
-                            key=f"vote_{item_id}", label_visibility="collapsed")
-                    with col_s:
-                        if st.button("💾 Enregistrer", key=f"save_{item_id}", use_container_width=True):
-                            try:
-                                supabase.table('ag_items').update({
-                                    'reponse': reponse_edit.strip() if reponse_edit else None,
-                                    'vote': vote_edit if vote_edit != "—" else None,
-                                }).eq('id', item_id).execute()
-                                st.success("✅ Enregistré"); st.cache_data.clear(); st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ {e}")
-                    with col_del:
-                        if st.button("🗑️", key=f"del_item_{item_id}",
-                                     use_container_width=True, help="Supprimer ce point"):
-                            try:
-                                supabase.table('ag_items').delete().eq('id', item_id).execute()
-                                st.cache_data.clear(); st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ {e}")
-                    st.divider()
-
-                col_exp1, col_exp2 = st.columns(2)
-                with col_exp1:
-                    pv_df = items_df[['ordre','type','titre','question','reponse','vote']].sort_values('ordre')
-                    st.download_button("📥 Exporter PV (CSV)", 
-                        pv_df.to_csv(index=False, sep=';').encode('utf-8-sig'),
-                        f"PV_AG_{str(sel_ag['date']).replace('/','_').replace('-','_')}.csv", "text/csv")
-
-    with ag_tab2:
-        st.subheader("➕ Créer une nouvelle Assemblée Générale")
-        with st.form("form_new_ag"):
-            col1, col2 = st.columns(2)
-            with col1:
-                ag_date = st.date_input("Date de l'AG *", key="ag_new_date")
-                ag_titre = st.text_input("Titre *", placeholder="ex: AG Ordinaire 2025", key="ag_new_titre")
-                ag_type = st.selectbox("Type", ["Ordinaire","Extraordinaire","Mixte"], key="ag_new_type")
-            with col2:
-                ag_lieu = st.text_input("Lieu", placeholder="ex: Salle de réunion RDC", key="ag_new_lieu")
-                ag_president = st.text_input("Président de séance", key="ag_new_pres")
-                ag_desc = st.text_area("Description / Observations", height=100, key="ag_new_desc")
-            if st.form_submit_button("✅ Créer l'AG", use_container_width=True):
-                if not ag_titre:
-                    st.error("⚠️ Le titre est obligatoire.")
-                else:
-                    try:
-                        supabase.table('ag').insert({
-                            'date': ag_date.strftime('%Y-%m-%d'), 'titre': ag_titre.strip(),
-                            'type_ag': ag_type,
-                            'lieu': ag_lieu.strip() if ag_lieu else None,
-                            'president': ag_president.strip() if ag_president else None,
-                            'description': ag_desc.strip() if ag_desc else None,
-                        }).execute()
-                        st.success(f"✅ AG **{ag_titre}** créée.")
-                        st.cache_data.clear(); st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ {e}")
-
-    with ag_tab3:
-        st.subheader("🗑️ Supprimer une Assemblée Générale")
-        ag_df2 = get_ag_list()
-        if ag_df2.empty:
-            st.info("Aucune AG à supprimer.")
-        else:
-            ag_del_opts = ag_df2.apply(lambda r: f"{r['date']} — {r['titre']}", axis=1).tolist()
-            sel_del_ag = st.selectbox("AG à supprimer", ag_del_opts, key="ag_del_sel")
-            sel_del_ag_id = int(ag_df2.iloc[ag_del_opts.index(sel_del_ag)]['id'])
-            nb_items = len(get_ag_items(sel_del_ag_id))
-            st.warning(f"⚠️ Supprimer cette AG et ses **{nb_items} point(s)** ? Action irréversible.")
-            col1, col2 = st.columns(2)
-            with col1:
-                confirm_ag_del = st.checkbox("Je confirme", key="chk_ag_del")
-            with col2:
-                if st.button("🗑️ Supprimer l'AG", key="btn_del_ag",
-                             disabled=not confirm_ag_del, use_container_width=True):
-                    try:
-                        supabase.table('ag_items').delete().eq('ag_id', sel_del_ag_id).execute()
-                        supabase.table('ag').delete().eq('id', sel_del_ag_id).execute()
-                        st.success("✅ AG supprimée.")
-                        st.cache_data.clear(); st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ {e}")
-
 
 # ==================== GRAND LIVRE GÉNÉRAL ====================
 elif menu == "📒 Grand Livre":
