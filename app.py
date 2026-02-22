@@ -656,7 +656,8 @@ st.sidebar.title("Navigation")
 menu = st.sidebar.radio("Choisir une section", [
     "📊 Tableau de Bord", "💰 Budget", "📝 Dépenses",
     "👥 Copropriétaires", "🔄 Répartition", "🏛️ Loi Alur", "📈 Analyses", "📋 Plan Comptable",
-    "🏛 AG — Assemblée Générale", "📒 Grand Livre", "📑 Contrats Fournisseurs", "📬 Communications"
+    "🏛 AG — Assemblée Générale", "📒 Grand Livre", "📑 Contrats Fournisseurs",
+    "📬 Communications", "🏠 Locataires"
 ])
 
 # ==================== TABLEAU DE BORD ====================
@@ -4544,6 +4545,410 @@ twilio_from_number = "+33xxxxxxxxx"
                         st.error("❌ Package Twilio non installé. Ajoutez `twilio` dans requirements.txt")
                     except Exception as e:
                         st.error(f"❌ Erreur Twilio : {e}")
+
+
+# ==================== LOCATAIRES ====================
+elif menu == "🏠 Locataires":
+    st.markdown("<h1 class='main-header'>🏠 Locataires</h1>", unsafe_allow_html=True)
+    st.caption("Fiches locataires par copropriétaire — mise à jour boîtes aux lettres & interphone")
+
+    @st.cache_data(ttl=30)
+    def get_locataires():
+        try:
+            r = supabase.table('locataires').select('*').execute()
+            return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+        except:
+            return pd.DataFrame()
+
+    copro_loc = get_coproprietaires()
+    if copro_loc.empty:
+        st.error("❌ Impossible de charger les copropriétaires."); st.stop()
+    copro_loc = prepare_copro(copro_loc)
+    loc_df    = get_locataires()
+
+    # Normalisation
+    if not loc_df.empty:
+        loc_df['lot_id'] = pd.to_numeric(loc_df['lot_id'], errors='coerce')
+    copro_loc['id'] = pd.to_numeric(copro_loc['id'], errors='coerce')
+
+    EMOJI_USAGE = {
+        'parking': '🅿️', 'studio': '🏠', 'studio ': '🏠',
+        '2pieces': '🏠', '2 pieces': '🏠', '2 pieces duplex': '🏠',
+        '3 pieces': '🏠', '3 pieces duplex': '🏠',
+    }
+
+    def usage_label(u):
+        u = str(u or '').strip().lower()
+        e = EMOJI_USAGE.get(u, '🏠')
+        labels = {'parking':'Parking','studio':'Studio','studio ':'Studio',
+                  '2pieces':'2 pièces','2 pieces':'2 pièces',
+                  '2 pieces duplex':'2 pièces duplex','3 pieces':'3 pièces',
+                  '3 pieces duplex':'3 pièces duplex'}
+        return f"{e} {labels.get(u, u.title())}"
+
+    loc_tab1, loc_tab2, loc_tab3, loc_tab4 = st.tabs([
+        "🏠 Fiches par propriétaire", "📋 Tous les locataires",
+        "🏷️ BAL & Interphone", "📊 Statistiques"
+    ])
+
+    # ══════════════════════════════════════════════════════════════
+    # TAB 1 — FICHES PAR PROPRIÉTAIRE
+    # ══════════════════════════════════════════════════════════════
+    with loc_tab1:
+        # Grouper les lots par propriétaire (nom)
+        noms_uniques = sorted(copro_loc['nom'].unique())
+
+        col_s1, col_s2 = st.columns([3, 1])
+        with col_s1:
+            sel_proprietaire = st.selectbox("👤 Sélectionner le propriétaire",
+                                            noms_uniques, key="loc_prop_sel")
+        with col_s2:
+            st.metric("Propriétaires", len(noms_uniques))
+
+        # Tous les lots de ce propriétaire
+        lots_prop = copro_loc[copro_loc['nom'] == sel_proprietaire].sort_values('lot')
+
+        st.divider()
+
+        # En-tête fiche propriétaire
+        nb_lots   = len(lots_prop)
+        nb_appts  = len(lots_prop[~lots_prop['usage'].str.lower().str.contains('parking', na=False)])
+        nb_pk     = len(lots_prop[lots_prop['usage'].str.lower().str.contains('parking', na=False)])
+
+        h1, h2, h3, h4 = st.columns(4)
+        h1.metric("👤 Propriétaire", sel_proprietaire.split('(')[0].strip())
+        h2.metric("🔑 Lots total",   nb_lots)
+        h3.metric("🏠 Appartements", nb_appts)
+        h4.metric("🅿️ Parkings",    nb_pk)
+
+        # Contact propriétaire (depuis coproprietaires)
+        cop_row_contact = lots_prop.iloc[0]
+        email_prop = cop_row_contact.get('email','') or ''
+        tel_prop   = cop_row_contact.get('telephone','') or ''
+        if email_prop or tel_prop:
+            st.info(f"📧 {email_prop}   📱 {tel_prop}")
+
+        st.divider()
+        st.subheader("🏠 Lots & Locataires")
+
+        # Pour chaque lot, afficher + éditer le locataire
+        for _, lot_row in lots_prop.iterrows():
+            lot_id   = int(lot_row['id'])
+            lot_num  = lot_row.get('lot', '?')
+            etage    = lot_row.get('etage', '?')
+            usage    = lot_row.get('usage', '')
+            desc     = lot_row.get('description', '') or ''
+
+            # Locataire actif pour ce lot
+            loc_actif = pd.DataFrame()
+            if not loc_df.empty and 'lot_id' in loc_df.columns:
+                loc_actif = loc_df[
+                    (loc_df['lot_id'] == lot_id) &
+                    (loc_df['actif'] == True)
+                ]
+
+            has_loc = not loc_actif.empty
+            badge   = "✅ Loué" if has_loc else "⬜ Libre / Occupé propriétaire"
+            color   = "#1a3a2a" if has_loc else "#2a2a2a"
+
+            with st.expander(
+                f"**Lot {lot_num}** — {usage_label(usage)} — Étage : {etage}  |  {badge}",
+                expanded=True
+            ):
+                st.markdown(
+                    f"<div style='background:{color};padding:8px 12px;border-radius:6px;"
+                    f"margin-bottom:10px;font-size:0.9em;color:#ccc;'>"
+                    f"🔑 Lot <b>{lot_num}</b> &nbsp;|&nbsp; {usage_label(usage)} "
+                    f"&nbsp;|&nbsp; {etage} &nbsp;|&nbsp; {desc}</div>",
+                    unsafe_allow_html=True
+                )
+
+                if has_loc:
+                    loc_row = loc_actif.iloc[0]
+                    loc_db_id = int(loc_row['id'])
+                    col_inf, col_form = st.columns([1, 1])
+                    with col_inf:
+                        st.markdown(f"**Locataire actuel**")
+                        st.markdown(f"👤 {loc_row.get('prenom','')} **{loc_row.get('nom','')}**")
+                        if loc_row.get('email'):  st.markdown(f"📧 {loc_row['email']}")
+                        if loc_row.get('telephone'): st.markdown(f"📱 {loc_row['telephone']}")
+                        if loc_row.get('label_bal'): st.markdown(f"📬 BAL : *{loc_row['label_bal']}*")
+                        if loc_row.get('label_interphone'): st.markdown(f"📞 Interphone : *{loc_row['label_interphone']}*")
+                        if loc_row.get('date_entree'): st.markdown(f"📅 Entrée : {loc_row['date_entree']}")
+                    with col_form:
+                        with st.form(f"form_edit_loc_{loc_db_id}"):
+                            st.markdown("**✏️ Modifier**")
+                            e_prenom = st.text_input("Prénom", value=str(loc_row.get('prenom','') or ''), key=f"ep_{loc_db_id}")
+                            e_nom    = st.text_input("Nom",    value=str(loc_row.get('nom','') or ''),    key=f"en_{loc_db_id}")
+                            e_email  = st.text_input("Email",  value=str(loc_row.get('email','') or ''),  key=f"ee_{loc_db_id}")
+                            e_tel    = st.text_input("Téléphone", value=str(loc_row.get('telephone','') or ''), key=f"et_{loc_db_id}")
+                            e_bal    = st.text_input("Étiquette BAL",       value=str(loc_row.get('label_bal','') or ''), key=f"eb_{loc_db_id}")
+                            e_iph    = st.text_input("Étiquette Interphone",value=str(loc_row.get('label_interphone','') or ''), key=f"ei_{loc_db_id}")
+                            e_notes  = st.text_input("Notes", value=str(loc_row.get('notes','') or ''), key=f"eno_{loc_db_id}")
+                            c1f, c2f = st.columns(2)
+                            with c1f:
+                                if st.form_submit_button("💾 Enregistrer", use_container_width=True, type="primary"):
+                                    supabase.table('locataires').update({
+                                        'prenom': e_prenom.strip() or None,
+                                        'nom': e_nom.strip() or None,
+                                        'email': e_email.strip() or None,
+                                        'telephone': e_tel.strip() or None,
+                                        'label_bal': e_bal.strip() or None,
+                                        'label_interphone': e_iph.strip() or None,
+                                        'notes': e_notes.strip() or None,
+                                    }).eq('id', loc_db_id).execute()
+                                    st.cache_data.clear(); st.rerun()
+                            with c2f:
+                                if st.form_submit_button("🚪 Départ", use_container_width=True):
+                                    supabase.table('locataires').update({
+                                        'actif': False,
+                                        'date_sortie': pd.Timestamp.today().strftime('%Y-%m-%d')
+                                    }).eq('id', loc_db_id).execute()
+                                    st.cache_data.clear(); st.rerun()
+
+                else:
+                    # Formulaire ajout nouveau locataire
+                    with st.form(f"form_new_loc_{lot_id}"):
+                        st.markdown("**➕ Ajouter un locataire**")
+                        n1, n2 = st.columns(2)
+                        with n1:
+                            n_prenom = st.text_input("Prénom",    key=f"np_{lot_id}")
+                            n_nom    = st.text_input("Nom *",     key=f"nn_{lot_id}")
+                            n_email  = st.text_input("Email",     key=f"ne_{lot_id}")
+                        with n2:
+                            n_tel    = st.text_input("Téléphone", key=f"nt_{lot_id}")
+                            n_bal    = st.text_input("Étiquette BAL",       key=f"nb_{lot_id}",
+                                                     placeholder=f"Ex: DUPONT - Lot {lot_num}")
+                            n_iph    = st.text_input("Étiquette Interphone",key=f"ni_{lot_id}",
+                                                     placeholder=f"Ex: DUPONT")
+                        n_entree = st.date_input("Date d'entrée", key=f"nde_{lot_id}")
+                        n_notes  = st.text_input("Notes",         key=f"nno_{lot_id}")
+                        if st.form_submit_button("✅ Enregistrer le locataire",
+                                                  use_container_width=True, type="primary"):
+                            if not n_nom.strip():
+                                st.error("❌ Le nom est obligatoire.")
+                            else:
+                                supabase.table('locataires').insert({
+                                    'lot_id':    lot_id,
+                                    'prenom':    n_prenom.strip() or None,
+                                    'nom':       n_nom.strip(),
+                                    'email':     n_email.strip() or None,
+                                    'telephone': n_tel.strip() or None,
+                                    'label_bal': n_bal.strip() or None,
+                                    'label_interphone': n_iph.strip() or None,
+                                    'date_entree': n_entree.strftime('%Y-%m-%d'),
+                                    'notes':     n_notes.strip() or None,
+                                    'actif':     True,
+                                }).execute()
+                                st.success(f"✅ Locataire enregistré pour le lot {lot_num}.")
+                                st.cache_data.clear(); st.rerun()
+
+    # ══════════════════════════════════════════════════════════════
+    # TAB 2 — TOUS LES LOCATAIRES
+    # ══════════════════════════════════════════════════════════════
+    with loc_tab2:
+        st.subheader("📋 Liste complète des locataires")
+
+        if loc_df.empty:
+            st.info("Aucun locataire enregistré.")
+        else:
+            # Joindre avec copropriétaires
+            merged = loc_df.merge(
+                copro_loc[['id','nom','lot','etage','usage']].rename(
+                    columns={'id':'lot_id','nom':'proprietaire'}),
+                on='lot_id', how='left'
+            )
+
+            # Filtres
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                filt_actif = st.radio("Statut", ["Actifs", "Tous", "Anciens"],
+                                      horizontal=True, key="loc_filt_actif")
+            with f2:
+                filt_usage = st.selectbox("Usage", ["Tous"] + sorted(
+                    copro_loc['usage'].dropna().unique().tolist()), key="loc_filt_usage")
+            with f3:
+                filt_search = st.text_input("🔍 Recherche", key="loc_search",
+                                            placeholder="Nom locataire ou propriétaire…")
+
+            df_show = merged.copy()
+            if filt_actif == "Actifs":
+                df_show = df_show[df_show['actif'] == True]
+            elif filt_actif == "Anciens":
+                df_show = df_show[df_show['actif'] != True]
+            if filt_usage != "Tous":
+                df_show = df_show[df_show['usage'] == filt_usage]
+            if filt_search:
+                mask = (
+                    df_show['nom'].fillna('').str.contains(filt_search, case=False) |
+                    df_show['prenom'].fillna('').str.contains(filt_search, case=False) |
+                    df_show['proprietaire'].fillna('').str.contains(filt_search, case=False)
+                )
+                df_show = df_show[mask]
+
+            # Métriques
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Locataires actifs",  int((merged['actif']==True).sum()))
+            m2.metric("Affichés",           len(df_show))
+            m3.metric("Lots loués / Total", f"{int((merged['actif']==True).sum())} / 70")
+
+            # Tableau
+            cols_disp = {
+                'lot': 'Lot', 'etage': 'Étage', 'usage': 'Usage',
+                'proprietaire': 'Propriétaire',
+                'prenom': 'Prénom loc.', 'nom': 'Nom loc.',
+                'email': 'Email', 'telephone': 'Téléphone',
+                'label_bal': 'BAL', 'label_interphone': 'Interphone',
+                'date_entree': 'Entrée', 'actif': 'Actif'
+            }
+            cols_ok = [c for c in cols_disp if c in df_show.columns]
+            df_tab  = df_show[cols_ok].copy()
+            df_tab.columns = [cols_disp[c] for c in cols_ok]
+            df_tab = df_tab.sort_values('Lot') if 'Lot' in df_tab.columns else df_tab
+
+            st.dataframe(df_tab, use_container_width=True, hide_index=True, height=500,
+                column_config={
+                    'Actif': st.column_config.CheckboxColumn("Actif"),
+                    'Lot':   st.column_config.NumberColumn("Lot", format="%d"),
+                })
+
+            csv_loc = df_tab.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+            st.download_button("📥 Exporter CSV", data=csv_loc,
+                               file_name="locataires.csv", mime="text/csv", key="dl_loc")
+
+    # ══════════════════════════════════════════════════════════════
+    # TAB 3 — BAL & INTERPHONE
+    # ══════════════════════════════════════════════════════════════
+    with loc_tab3:
+        st.subheader("🏷️ Étiquettes — Boîtes aux lettres & Interphone")
+        st.caption("Vue synthétique pour mise à jour des étiquettes. "
+                   "Affiche le nom du locataire s'il y en a un, sinon le propriétaire.")
+
+        # Construire la liste complète lots + nom affiché
+        rows_bal = []
+        for _, lot in copro_loc.iterrows():
+            lot_id_b = int(lot['id'])
+            loc_actif_b = pd.DataFrame()
+            if not loc_df.empty and 'lot_id' in loc_df.columns:
+                loc_actif_b = loc_df[(loc_df['lot_id'] == lot_id_b) & (loc_df['actif'] == True)]
+
+            if not loc_actif_b.empty:
+                lr = loc_actif_b.iloc[0]
+                nom_affiche  = f"{lr.get('prenom','')} {lr.get('nom','')}".strip()
+                label_bal    = lr.get('label_bal','') or nom_affiche
+                label_iph    = lr.get('label_interphone','') or nom_affiche.split()[-1] if nom_affiche else ''
+                statut       = "🏠 Locataire"
+            else:
+                prop_name    = lot['nom'].split('(')[0].strip()
+                nom_affiche  = prop_name
+                label_bal    = prop_name
+                label_iph    = prop_name.split()[-1] if prop_name else ''
+                statut       = "👤 Propriétaire"
+
+            is_parking = 'parking' in str(lot.get('usage','')).lower()
+            rows_bal.append({
+                'Lot':        int(lot.get('lot', 0)),
+                'Étage':      lot.get('etage',''),
+                'Usage':      usage_label(lot.get('usage','')),
+                'Statut':     statut,
+                'Nom affiché': nom_affiche,
+                '📬 BAL':     label_bal,
+                '📞 Interphone': '' if is_parking else label_iph,
+                'Propriétaire': lot['nom'].split('(')[0].strip(),
+            })
+
+        df_bal = pd.DataFrame(rows_bal).sort_values('Lot')
+
+        # Filtres
+        bf1, bf2 = st.columns(2)
+        with bf1:
+            filt_bal_usage = st.radio("Afficher",
+                ["Appartements + Studios", "Tous (+ parkings)"], horizontal=True, key="bal_filt")
+        with bf2:
+            filt_bal_statut = st.selectbox("Statut", ["Tous", "🏠 Locataire", "👤 Propriétaire"],
+                                           key="bal_stat")
+
+        df_bal_show = df_bal.copy()
+        if filt_bal_usage == "Appartements + Studios":
+            df_bal_show = df_bal_show[~df_bal_show['Usage'].str.contains('Parking', na=False)]
+        if filt_bal_statut != "Tous":
+            df_bal_show = df_bal_show[df_bal_show['Statut'] == filt_bal_statut]
+
+        nb_loc_b = int((df_bal['Statut'] == '🏠 Locataire').sum())
+        nb_prop_b = int((df_bal['Statut'] == '👤 Propriétaire').sum())
+        b1, b2, b3 = st.columns(3)
+        b1.metric("🏠 Locataires",    nb_loc_b)
+        b2.metric("👤 Propriétaires", nb_prop_b)
+        b3.metric("📊 Taux location", f"{nb_loc_b/len(df_bal)*100:.0f}%")
+
+        st.dataframe(df_bal_show, use_container_width=True, hide_index=True,
+            column_config={
+                'Lot': st.column_config.NumberColumn("Lot", format="%d"),
+            })
+
+        # Export pour impression
+        csv_bal = df_bal_show.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+        st.download_button("📥 Exporter liste BAL/Interphone", data=csv_bal,
+                           file_name="bal_interphone.csv", mime="text/csv", key="dl_bal")
+
+        # Vue impression étiquettes
+        st.divider()
+        st.subheader("🖨️ Aperçu étiquettes")
+        st.caption("Format compact pour impression ou copier-coller")
+        apts_only = df_bal_show[~df_bal_show['Usage'].str.contains('Parking', na=False)]
+        html_tags = "<div style='display:flex;flex-wrap:wrap;gap:8px;'>"
+        for _, r in apts_only.iterrows():
+            bg = "#1a3a2a" if "Locataire" in r['Statut'] else "#1a1a2e"
+            html_tags += (
+                f"<div style='background:{bg};border:1px solid #444;border-radius:4px;"
+                f"padding:8px 12px;min-width:160px;'>"
+                f"<div style='font-size:0.75em;color:#888;'>Lot {r['Lot']} — {r['Étage']}</div>"
+                f"<div style='font-weight:bold;color:#eee;font-size:0.95em;'>{r['📬 BAL']}</div>"
+                f"<div style='font-size:0.75em;color:#aaa;'>{r['Statut']}</div>"
+                f"</div>"
+            )
+        html_tags += "</div>"
+        st.markdown(html_tags, unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════
+    # TAB 4 — STATISTIQUES
+    # ══════════════════════════════════════════════════════════════
+    with loc_tab4:
+        st.subheader("📊 Statistiques occupation")
+
+        nb_appts_total = len(copro_loc[~copro_loc['usage'].str.lower().str.contains('parking', na=False)])
+        nb_pk_total    = len(copro_loc[copro_loc['usage'].str.lower().str.contains('parking', na=False)])
+        nb_loc_actifs  = 0 if loc_df.empty else int((loc_df['actif'] == True).sum())
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🏠 Lots habitation",  nb_appts_total)
+        c2.metric("🅿️ Parkings",        nb_pk_total)
+        c3.metric("🏠 Lots loués",       nb_loc_actifs)
+        c4.metric("📊 Taux loc. global", f"{nb_loc_actifs/max(nb_appts_total,1)*100:.0f}%")
+
+        st.divider()
+
+        # Lots sans info locataire
+        lots_sans_loc = []
+        for _, lot in copro_loc[~copro_loc['usage'].str.lower().str.contains('parking', na=False)].iterrows():
+            lid = int(lot['id'])
+            has = not loc_df.empty and 'lot_id' in loc_df.columns and                   not loc_df[(loc_df['lot_id']==lid) & (loc_df['actif']==True)].empty
+            if not has:
+                lots_sans_loc.append({
+                    'Lot': int(lot['lot']), 'Étage': lot['etage'],
+                    'Usage': usage_label(lot['usage']),
+                    'Propriétaire': lot['nom'].split('(')[0].strip(),
+                    'Email prop.': lot.get('email','') or '—',
+                })
+
+        if lots_sans_loc:
+            st.markdown(f"#### ⚠️ {len(lots_sans_loc)} lot(s) sans information locataire")
+            st.caption("Ces lots sont occupés par leur propriétaire ou l'information n'a pas été saisie.")
+            df_sans = pd.DataFrame(lots_sans_loc).sort_values('Lot')
+            st.dataframe(df_sans, use_container_width=True, hide_index=True,
+                column_config={'Lot': st.column_config.NumberColumn("Lot", format="%d")})
+        else:
+            st.success("✅ Tous les lots ont une information locataire !")
 
 
 st.divider()
