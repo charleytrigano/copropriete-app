@@ -204,16 +204,103 @@ if "fiche" in _qp:
                 _brevo_from = st.secrets.get("brevo_from_email","")
                 if _brevo_key and _brevo_from:
                     import json as _j2
-                    _body = f"Fiche locataire reçue de {_prop_nom}\n\n"
+                    _prop_court = _prop_nom.split('(')[0].strip()
+                    _date_envoi = pd.Timestamp.today().strftime('%d/%m/%Y à %H:%M')
+
+                    # ── Corps texte ─────────────────────────────────
+                    _body_txt = (
+                        f"FICHE LOCATAIRE REÇUE\n"
+                        f"{'='*40}\n"
+                        f"Propriétaire : {_prop_nom}\n"
+                        f"Date de réponse : {_date_envoi}\n\n"
+                    )
+
+                    # ── Corps HTML ──────────────────────────────────
+                    _rows_html = ""
                     for _r in _responses:
-                        if not _r['is_parking'] and _r['nom'].strip():
-                            _body += f"Lot {_r['lot_num']}: {_r['prenom']} {_r['nom']} — {_r['email']} — {_r['telephone']}\n"
-                    _body += f"\nNotes: {_notes_gen}"
+                        _is_loue = _r['occupation'] in ('Loué', "Loué à quelqu'un")
+                        _usage_r = '🅿️ Parking' if _r['is_parking'] else '🏠 Appartement'
+                        _statut_r = '🏠 Loué' if _is_loue else '👤 Occupé propriétaire'
+                        _bg = '#e8f5e9' if _is_loue else '#f5f5f5'
+
+                        if _is_loue and (_r.get('nom','').strip() or _r['is_parking']):
+                            _nom_loc    = f"{_r.get('prenom','')} {_r.get('nom','')}".strip()
+                            _email_loc  = _r.get('email','—') or '—'
+                            _tel_loc    = _r.get('telephone','—') or '—'
+                            _bal_loc    = _r.get('label_bal','—') or '—'
+                            _iph_loc    = _r.get('label_interphone','—') or '—'
+
+                            _body_txt += (
+                                f"LOT {_r['lot_num']} — {_usage_r}\n"
+                                f"  Statut      : {_statut_r}\n"
+                                f"  Locataire   : {_nom_loc}\n"
+                                f"  Email       : {_email_loc}\n"
+                                f"  Téléphone   : {_tel_loc}\n"
+                                f"  BAL         : {_bal_loc}\n"
+                                f"  Interphone  : {_iph_loc}\n\n"
+                            )
+                            _rows_html += f"""
+                            <tr style="background:{_bg};">
+                              <td style="padding:8px;border:1px solid #ddd;"><b>Lot {_r['lot_num']}</b></td>
+                              <td style="padding:8px;border:1px solid #ddd;">{_usage_r}</td>
+                              <td style="padding:8px;border:1px solid #ddd;">{_statut_r}</td>
+                              <td style="padding:8px;border:1px solid #ddd;"><b>{_nom_loc}</b></td>
+                              <td style="padding:8px;border:1px solid #ddd;"><a href="mailto:{_email_loc}">{_email_loc}</a></td>
+                              <td style="padding:8px;border:1px solid #ddd;"><a href="tel:{_tel_loc}">{_tel_loc}</a></td>
+                              <td style="padding:8px;border:1px solid #ddd;">{_bal_loc}</td>
+                              <td style="padding:8px;border:1px solid #ddd;">{_iph_loc}</td>
+                            </tr>"""
+                        else:
+                            _body_txt += (
+                                f"LOT {_r['lot_num']} — {_usage_r}\n"
+                                f"  Statut : {_statut_r}\n\n"
+                            )
+                            _rows_html += f"""
+                            <tr style="background:{_bg};">
+                              <td style="padding:8px;border:1px solid #ddd;"><b>Lot {_r['lot_num']}</b></td>
+                              <td style="padding:8px;border:1px solid #ddd;">{_usage_r}</td>
+                              <td colspan="6" style="padding:8px;border:1px solid #ddd;color:#888;">{_statut_r}</td>
+                            </tr>"""
+
+                    if _notes_gen.strip():
+                        _body_txt += f"Notes : {_notes_gen}\n"
+
+                    _body_html = f"""
+                    <html><body style="font-family:Arial,sans-serif;color:#333;">
+                      <div style="background:#1f77b4;padding:16px;border-radius:8px 8px 0 0;">
+                        <h2 style="color:white;margin:0;">📋 Fiche locataire reçue</h2>
+                      </div>
+                      <div style="border:1px solid #ddd;border-top:none;padding:20px;border-radius:0 0 8px 8px;">
+                        <p><b>Propriétaire :</b> {_prop_nom}</p>
+                        <p><b>Date de réponse :</b> {_date_envoi}</p>
+                        <table style="width:100%;border-collapse:collapse;margin-top:16px;font-size:0.9em;">
+                          <thead>
+                            <tr style="background:#1f77b4;color:white;">
+                              <th style="padding:8px;text-align:left;">Lot</th>
+                              <th style="padding:8px;text-align:left;">Type</th>
+                              <th style="padding:8px;text-align:left;">Statut</th>
+                              <th style="padding:8px;text-align:left;">Locataire</th>
+                              <th style="padding:8px;text-align:left;">Email</th>
+                              <th style="padding:8px;text-align:left;">Téléphone</th>
+                              <th style="padding:8px;text-align:left;">BAL</th>
+                              <th style="padding:8px;text-align:left;">Interphone</th>
+                            </tr>
+                          </thead>
+                          <tbody>{_rows_html}</tbody>
+                        </table>
+                        {"<p><b>Notes :</b> " + _notes_gen + "</p>" if _notes_gen.strip() else ""}
+                        <p style="margin-top:20px;color:#888;font-size:0.85em;">
+                          ✅ Ces informations ont été enregistrées automatiquement dans Supabase.
+                        </p>
+                      </div>
+                    </body></html>"""
+
                     _payload = _j2.dumps({
-                        "sender": {"name":"Copropriété","email":_brevo_from},
-                        "to": [{"email":_brevo_from}],
-                        "subject": f"📋 Fiche locataire reçue — {_prop_nom.split('(')[0].strip()}",
-                        "textContent": _body,
+                        "sender": {"name": "Copropriété", "email": _brevo_from},
+                        "to":     [{"email": _brevo_from}],
+                        "subject": f"📋 Fiche locataire — {_prop_court} — {_date_envoi}",
+                        "textContent": _body_txt,
+                        "htmlContent": _body_html,
                     }).encode('utf-8')
                     _req2 = _ureq.Request("https://api.brevo.com/v3/smtp/email",
                         data=_payload,
