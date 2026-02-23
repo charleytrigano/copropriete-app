@@ -1211,7 +1211,10 @@ elif menu == "💰 Budget":
                             if updates:
                                 supabase.table('budget').update(updates).eq('id', int(row['id'])).execute()
                                 mods += 1
-                        st.success(f"✅ {mods} ligne(s) mise(s) à jour!") if mods > 0 else st.info("Aucune modification")
+                        if mods > 0:
+                            st.success(f"✅ {mods} ligne(s) mise(s) à jour!")
+                        else:
+                            st.info("Aucune modification")
                         if mods > 0: st.rerun()
                     except Exception as e:
                         st.error(f"❌ {e}")
@@ -1504,7 +1507,10 @@ elif menu == "📝 Dépenses":
                             if float(row['montant_du']) != float(o['montant_du']): updates['montant_du'] = float(row['montant_du'])
                             if updates:
                                 supabase.table('depenses').update(updates).eq('id', int(row['id'])).execute(); mods += 1
-                        st.success(f"✅ {mods} ligne(s) mise(s) à jour!") if mods > 0 else st.info("Aucune modification")
+                        if mods > 0:
+                            st.success(f"✅ {mods} ligne(s) mise(s) à jour!")
+                        else:
+                            st.info("Aucune modification")
                         if mods > 0: st.rerun()
                     except Exception as e:
                         st.error(f"❌ {e}")
