@@ -1585,8 +1585,8 @@ elif menu == "📝 Dépenses":
 
             st.divider()
 
-            subtab1, subtab2, subtab3, subtab4 = st.tabs([
-                "📋 Liste", "➕ Nouveau chantier", "🔗 Transférer factures", "🗑️ Gérer"
+            subtab1, subtab1b, subtab2, subtab3, subtab4 = st.tabs([
+                "📋 Liste", "✏️ Modifier", "➕ Nouveau chantier", "🔗 Transférer factures", "🗑️ Gérer"
             ])
 
             # ---- LISTE ----
@@ -1629,7 +1629,82 @@ elif menu == "📝 Dépenses":
                     csv_tv = tv_df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
                     st.download_button("📥 Exporter CSV", csv_tv, "travaux_votes.csv", "text/csv")
 
-            # ---- NOUVEAU CHANTIER / SAISIE MANUELLE ----
+            # ---- MODIFIER ----
+            with subtab1b:
+                st.subheader("✏️ Modifier un travail voté")
+                if tv_df.empty:
+                    st.info("Aucun travail voté enregistré.")
+                else:
+                    # Sélecteur
+                    tv_labels = tv_df.apply(lambda r: (
+                        f"{r['date'].strftime('%d/%m/%Y')} — "
+                        f"{r.get('objet','?')} — "
+                        f"{r.get('fournisseur','?')} — "
+                        f"{float(r.get('montant',0)):,.2f} €"
+                    ), axis=1).tolist()
+                    sel_tv_label = st.selectbox("Sélectionner l'entrée à modifier", tv_labels, key="tv_mod_sel")
+                    sel_tv_row   = tv_df.iloc[tv_labels.index(sel_tv_label)]
+                    sel_tv_id    = int(sel_tv_row['id'])
+                    is_transferee = pd.notna(sel_tv_row.get('depense_id'))
+
+                    if is_transferee:
+                        st.info("🔗 Cette entrée est une facture transférée. "
+                                "Seul l'**objet / chantier** et le **commentaire** sont modifiables "
+                                "(les montants et dates viennent de la dépense source).")
+
+                    with st.form(f"form_mod_tv_{sel_tv_id}"):
+                        mc1, mc2 = st.columns(2)
+                        with mc1:
+                            m_objet = st.text_input(
+                                "Objet / Chantier *",
+                                value=str(sel_tv_row.get('objet','') or ''),
+                                key=f"tvm_obj_{sel_tv_id}"
+                            )
+                            m_fourn = st.text_input(
+                                "Fournisseur",
+                                value=str(sel_tv_row.get('fournisseur','') or ''),
+                                disabled=is_transferee,
+                                key=f"tvm_fourn_{sel_tv_id}"
+                            )
+                        with mc2:
+                            m_date = st.date_input(
+                                "Date",
+                                value=sel_tv_row['date'].date() if pd.notna(sel_tv_row.get('date')) else datetime.now().date(),
+                                disabled=is_transferee,
+                                key=f"tvm_date_{sel_tv_id}"
+                            )
+                            m_montant = st.number_input(
+                                "Montant (€)",
+                                value=float(sel_tv_row.get('montant',0) or 0),
+                                disabled=is_transferee,
+                                key=f"tvm_mont_{sel_tv_id}"
+                            )
+                        m_comment = st.text_input(
+                            "Commentaire",
+                            value=str(sel_tv_row.get('commentaire','') or ''),
+                            key=f"tvm_com_{sel_tv_id}"
+                        )
+
+                        if st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True):
+                            if not m_objet.strip():
+                                st.error("❌ L'objet / chantier est obligatoire.")
+                            else:
+                                try:
+                                    updates = {
+                                        'objet':       m_objet.strip(),
+                                        'commentaire': m_comment.strip() or None,
+                                    }
+                                    if not is_transferee:
+                                        updates['fournisseur'] = m_fourn.strip() or None
+                                        updates['date']        = m_date.strftime('%Y-%m-%d')
+                                        updates['montant']     = float(m_montant)
+                                    supabase.table('travaux_votes').update(updates).eq('id', sel_tv_id).execute()
+                                    st.success("✅ Entrée mise à jour.")
+                                    st.cache_data.clear(); st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ {e}")
+
+                        # ---- NOUVEAU CHANTIER / SAISIE MANUELLE ----
             with subtab2:
                 st.subheader("Ajouter une dépense de travaux votés")
                 with st.form("form_tv"):
