@@ -10,11 +10,61 @@ st.set_page_config(page_title="Gestion Copropriété", page_icon="🏢", layout=
 
 @st.cache_resource
 def init_supabase():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        if not url or not key or url == "https://xxxxxxxxxxxxxxxxxxxx.supabase.co":
+            return None
+        return create_client(url, key)
+    except Exception:
+        return None
 
 supabase = init_supabase()
+
+# ── Garde : afficher la page de configuration si Supabase n'est pas initialisé ──
+if supabase is None:
+    st.markdown("""
+    <style>
+    .config-box { background: #1e1e2e; padding: 2rem; border-radius: 12px;
+                  border: 1px solid #444; max-width: 700px; margin: 3rem auto; }
+    </style>
+    """, unsafe_allow_html=True)
+    st.error("⚙️ **Configuration requise** — Supabase non configuré")
+    st.markdown("""
+    ### 🚀 Démarrage rapide
+
+    **1. Créez votre projet Supabase** sur [supabase.com](https://supabase.com) (gratuit)
+
+    **2. Configurez `.streamlit/secrets.toml`** :
+    ```toml
+    SUPABASE_URL = "https://xxxxxxxxxxxxxxxxxxxx.supabase.co"
+    SUPABASE_KEY = "votre-anon-key"
+
+    # Optionnel — Emails via Brevo
+    brevo_api_key    = ""
+    brevo_from_email = ""
+    brevo_from_name  = "Syndic Copropriété"
+
+    # Optionnel — URL publique de l'app (pour les fiches locataires)
+    app_url = "https://votre-app.streamlit.app"
+    ```
+
+    **3. Exécutez le script SQL** du fichier `setup_supabase.sql` dans l'éditeur SQL de Supabase
+    (Table Editor → SQL Editor → Coller le contenu → Exécuter)
+
+    **4. Redémarrez l'application** ← et c'est prêt !
+    """)
+    with st.expander("🔧 Tester la connexion manuellement"):
+        test_url = st.text_input("SUPABASE_URL", placeholder="https://xxxx.supabase.co")
+        test_key = st.text_input("SUPABASE_KEY", type="password")
+        if st.button("🔌 Tester", type="primary"):
+            try:
+                client = create_client(test_url, test_key)
+                client.table("budget").select("id").limit(1).execute()
+                st.success("✅ Connexion réussie ! Configurez secrets.toml et redémarrez.")
+            except Exception as e:
+                st.error(f"❌ Échec : {e}")
+    st.stop()
 
 st.markdown("""
 <style>
@@ -317,12 +367,14 @@ if "fiche" in _qp:
 
 # v20260218_111053 — Fix Alur base = total_bud
 # ==================== FONCTIONS DB ====================
+@st.cache_data(ttl=30)
 def get_budget():
     try:
         return pd.DataFrame(supabase.table('budget').select('*').execute().data)
     except Exception as e:
         st.error(f"❌ Erreur budget: {e}"); return pd.DataFrame()
 
+@st.cache_data(ttl=30)
 def get_depenses(date_debut=None, date_fin=None):
     try:
         q = supabase.table('depenses').select('*')
@@ -347,10 +399,12 @@ def upload_facture(dep_id, file_bytes, filename):
     return storage_path
 
 def get_facture_url(storage_path):
-    """Retourne l'URL signée (1h) de la facture."""
+    """Retourne l'URL signée (1h) — compatible toutes versions supabase-py."""
     try:
         r = supabase.storage.from_('factures').create_signed_url(storage_path, 3600)
-        return r.get('signedURL') or r.get('signedUrl', '')
+        if isinstance(r, dict):
+            return r.get('signedURL') or r.get('signedUrl') or r.get('signed_url', '')
+        return getattr(r, 'signed_url', '') or getattr(r, 'signedURL', '')
     except:
         return ''
 
@@ -426,24 +480,28 @@ def delete_facture(dep_id, storage_path):
     supabase.storage.from_('factures').remove([storage_path])
     supabase.table('depenses').update({'facture_path': None}).eq('id', dep_id).execute()
 
+@st.cache_data(ttl=30)
 def get_coproprietaires():
     try:
         return pd.DataFrame(supabase.table('coproprietaires').select('*').execute().data)
     except Exception as e:
         st.error(f"❌ Erreur copropriétaires: {e}"); return pd.DataFrame()
 
+@st.cache_data(ttl=30)
 def get_plan_comptable():
     try:
         return pd.DataFrame(supabase.table('plan_comptable').select('*').execute().data)
     except Exception as e:
         st.error(f"❌ Erreur plan comptable: {e}"); return pd.DataFrame()
 
+@st.cache_data(ttl=30)
 def get_travaux_votes():
     try:
         return pd.DataFrame(supabase.table('travaux_votes').select('*').order('date').execute().data)
     except Exception as e:
         st.error(f"❌ Erreur travaux_votes: {e}"); return pd.DataFrame()
 
+@st.cache_data(ttl=30)
 def get_travaux_votes_depense_ids():
     """Retourne les IDs des dépenses transférées en travaux votés."""
     try:
@@ -452,12 +510,14 @@ def get_travaux_votes_depense_ids():
     except:
         return []
 
+@st.cache_data(ttl=30)
 def get_loi_alur():
     try:
         return pd.DataFrame(supabase.table('loi_alur').select('*').order('date').execute().data)
     except Exception as e:
         st.error(f"❌ Erreur loi_alur: {e}"); return pd.DataFrame()
 
+@st.cache_data(ttl=30)
 def get_depenses_alur_ids():
     """Retourne les IDs des dépenses déjà affectées au fonds Alur."""
     try:
