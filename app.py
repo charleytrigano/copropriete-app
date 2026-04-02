@@ -5395,7 +5395,8 @@ elif menu == "🏠 Locataires":
 
         _msg_defaut = """Bonjour {nom},
 
-Dans le cadre de la mise à jour de notre annuaire (boîtes aux lettres et interphone), merci de bien vouloir remplir la fiche ci-dessous :
+Dans le cadre de la mise à jour de notre annuaire (boîtes aux lettres et interphone), merci de bien vouloir remplir la fiche ci-dessous,
+en y indiquant le nom et prenom de votre locataire ou de l'agence en charge de votre appartement :
 
 🔗 {lien}
 
