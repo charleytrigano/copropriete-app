@@ -2165,6 +2165,7 @@ elif menu == "👥 Copropriétaires":
                 hide_index=True,
                 column_config={
                     'lot':       st.column_config.NumberColumn("Lot", format="%d"),
+                    'description': st.column_config.TextColumn("Apt N."),
                     'nom':       st.column_config.TextColumn("Nom"),
                     'email':     st.column_config.TextColumn("📧 Email"),
                     'telephone': st.column_config.TextColumn("📱 Téléphone"),
