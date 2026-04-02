@@ -32,6 +32,7 @@ def import_coproprietaires(client, df: pd.DataFrame):
         records.append({
             "nom":                      str(row.get("nom", "") or ""),
             "lot":                      int(row["lot"]) if pd.notna(row.get("lot")) else None,
+            "N° appartement":           str(row.get("description","") or ""), 
             "etage":                    str(row.get("etage", "") or ""),
             "usage":                    str(row.get("usage", "") or ""),
             "adresse":                  str(row.get("adresse", "") or ""),
